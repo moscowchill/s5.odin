@@ -1,0 +1,40 @@
+# Compiled binaries
+s5proxy
+s5proxy_linux
+s5proxy_linux_dev
+s5proxy_linux_tiny
+s5proxy.exe
+s5proxy_dev.exe
+s5proxy_tiny.exe
+*.exe
+*.bin
+*.out
+
+# Odin build artifacts
+*.o
+*.obj
+*.lib
+*.a
+*.so
+*.dll
+*.dylib
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.sublime-*
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
