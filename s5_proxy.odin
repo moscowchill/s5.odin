@@ -276,7 +276,8 @@ socks5_authenticate :: proc(socket: net.TCP_Socket) -> bool {
     if !recv_exactly(socket, buf[:ulen]) {
         return false
     }
-    username := string(buf[:ulen])
+    username := strings.clone(string(buf[:ulen]))
+    defer delete(username)
 
     // Read password length
     if !recv_exactly(socket, buf[ulen:ulen+1]) {
@@ -295,6 +296,10 @@ socks5_authenticate :: proc(socket: net.TCP_Socket) -> bool {
 
     // Verify credentials (comparing slices directly to avoid string allocation)
     auth_ok := username == g_config.username && password == g_config.password
+
+    if g_config.verbose {
+        log.infof("Authentication result: %v", auth_ok)
+    }
 
     // Send auth response
     response: [2]byte
