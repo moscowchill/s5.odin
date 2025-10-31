@@ -87,8 +87,8 @@ g_active_connections: [dynamic]^Connection_Context
 g_connection_count: int
 g_connection_mutex: ^os.Handle
 
-// Connection limits
-MAX_CONNECTIONS :: 10000
+// Connection limits (adjusted for small pentesting team)
+MAX_CONNECTIONS :: 1000  // Plenty for 1-2 users with aggressive scanning
 
 // Helper: Receive exactly N bytes (handles partial reads)
 recv_exactly :: proc(socket: net.TCP_Socket, buf: []byte) -> (ok: bool) {
