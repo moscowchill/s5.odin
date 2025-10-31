@@ -84,6 +84,24 @@ Relay_Context :: struct {
 // Global state
 g_config: Config
 g_active_connections: [dynamic]^Connection_Context
+g_connection_count: int
+g_connection_mutex: ^os.Handle
+
+// Connection limits
+MAX_CONNECTIONS :: 10000
+
+// Helper: Receive exactly N bytes (handles partial reads)
+recv_exactly :: proc(socket: net.TCP_Socket, buf: []byte) -> (ok: bool) {
+    total := 0
+    for total < len(buf) {
+        n, err := net.recv_tcp(socket, buf[total:])
+        if err != nil || n == 0 {
+            return false
+        }
+        total += n
+    }
+    return true
+}
 
 main :: proc() {
     context.logger = log.create_console_logger()
@@ -130,9 +148,21 @@ main :: proc() {
             continue
         }
 
+        // Check connection limit
+        if g_connection_count >= MAX_CONNECTIONS {
+            if g_config.verbose {
+                log.warnf("Connection limit reached (%d), rejecting connection", MAX_CONNECTIONS)
+            }
+            net.close(client_socket)
+            continue
+        }
+
         if g_config.verbose {
             log.infof("New connection from: %v", client_endpoint)
         }
+
+        // Increment connection counter
+        g_connection_count += 1
 
         // Handle connection in new thread
         ctx := new(Connection_Context)
@@ -152,6 +182,9 @@ main :: proc() {
 handle_connection_thread :: proc(ctx: ^Connection_Context) {
     defer free(ctx)
     defer net.close(ctx.client_socket)
+    defer {
+        g_connection_count -= 1
+    }
 
     // Perform SOCKS5 handshake
     if !socks5_handshake(ctx.client_socket) {
@@ -170,6 +203,7 @@ handle_connection_thread :: proc(ctx: ^Connection_Context) {
         send_socks5_reply(ctx.client_socket, REP_GENERAL_FAILURE)
         return
     }
+    defer delete(target_host)  // Free the allocated host string
 
     ctx.target_host = target_host
     ctx.target_port = target_port
@@ -197,8 +231,7 @@ socks5_handshake :: proc(socket: net.TCP_Socket) -> bool {
     buf: [258]byte
 
     // Read version and method count
-    n, err := net.recv_tcp(socket, buf[:2])
-    if err != nil || n != 2 {
+    if !recv_exactly(socket, buf[:2]) {
         return false
     }
 
@@ -214,8 +247,7 @@ socks5_handshake :: proc(socket: net.TCP_Socket) -> bool {
 
     // Read authentication methods
     if nmethods > 0 {
-        n, err = net.recv_tcp(socket, buf[:nmethods])
-        if err != nil || n != nmethods {
+        if !recv_exactly(socket, buf[:nmethods]) {
             return false
         }
     }
@@ -263,40 +295,41 @@ socks5_authenticate :: proc(socket: net.TCP_Socket) -> bool {
     buf: [512]byte
 
     // Read auth version
-    n, err := net.recv_tcp(socket, buf[:1])
-    if err != nil || n != 1 || buf[0] != 0x01 {
+    if !recv_exactly(socket, buf[:1]) || buf[0] != 0x01 {
         return false
     }
 
     // Read username length
-    n, err = net.recv_tcp(socket, buf[:1])
-    if err != nil || n != 1 {
+    if !recv_exactly(socket, buf[:1]) {
         return false
     }
     ulen := int(buf[0])
+    if ulen > 255 || ulen == 0 {
+        return false
+    }
 
     // Read username
-    n, err = net.recv_tcp(socket, buf[:ulen])
-    if err != nil || n != ulen {
+    if !recv_exactly(socket, buf[:ulen]) {
         return false
     }
     username := string(buf[:ulen])
 
     // Read password length
-    n, err = net.recv_tcp(socket, buf[:1])
-    if err != nil || n != 1 {
+    if !recv_exactly(socket, buf[ulen:ulen+1]) {
         return false
     }
-    plen := int(buf[0])
+    plen := int(buf[ulen])
+    if plen > 255 || plen == 0 {
+        return false
+    }
 
     // Read password
-    n, err = net.recv_tcp(socket, buf[:plen])
-    if err != nil || n != plen {
+    if !recv_exactly(socket, buf[ulen+1:ulen+1+plen]) {
         return false
     }
-    password := string(buf[:plen])
+    password := string(buf[ulen+1:ulen+1+plen])
 
-    // Verify credentials
+    // Verify credentials (comparing slices directly to avoid string allocation)
     auth_ok := username == g_config.username && password == g_config.password
 
     // Send auth response
@@ -318,8 +351,7 @@ parse_socks5_request :: proc(socket: net.TCP_Socket) -> (host: string, port: u16
     buf: [263]byte
 
     // Read request header
-    n, err := net.recv_tcp(socket, buf[:4])
-    if err != nil || n != 4 {
+    if !recv_exactly(socket, buf[:4]) {
         return "", 0, 0, false
     }
 
@@ -339,8 +371,7 @@ parse_socks5_request :: proc(socket: net.TCP_Socket) -> (host: string, port: u16
     switch atyp {
     case ATYP_IPV4:
         // Read 4 bytes for IPv4 + 2 bytes for port
-        n, err = net.recv_tcp(socket, buf[:6])
-        if err != nil || n != 6 {
+        if !recv_exactly(socket, buf[:6]) {
             return "", 0, 0, false
         }
 
@@ -352,15 +383,16 @@ parse_socks5_request :: proc(socket: net.TCP_Socket) -> (host: string, port: u16
 
     case ATYP_DOMAIN:
         // Read domain length
-        n, err = net.recv_tcp(socket, buf[:1])
-        if err != nil || n != 1 {
+        if !recv_exactly(socket, buf[:1]) {
             return "", 0, 0, false
         }
         domain_len := int(buf[0])
+        if domain_len == 0 || domain_len > 255 {
+            return "", 0, 0, false
+        }
 
         // Read domain + port
-        n, err = net.recv_tcp(socket, buf[:domain_len + 2])
-        if err != nil || n != domain_len + 2 {
+        if !recv_exactly(socket, buf[:domain_len + 2]) {
             return "", 0, 0, false
         }
 
@@ -370,12 +402,11 @@ parse_socks5_request :: proc(socket: net.TCP_Socket) -> (host: string, port: u16
 
     case ATYP_IPV6:
         // Read 16 bytes for IPv6 + 2 bytes for port
-        n, err = net.recv_tcp(socket, buf[:18])
-        if err != nil || n != 18 {
+        if !recv_exactly(socket, buf[:18]) {
             return "", 0, 0, false
         }
 
-        // Format IPv6 address (simplified)
+        // Format IPv6 address (proper format with colons)
         host_str := fmt.tprintf("%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
             buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
             buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15])
@@ -397,7 +428,7 @@ parse_socks5_request :: proc(socket: net.TCP_Socket) -> (host: string, port: u16
     return host, port, cmd, true
 }
 
-send_socks5_reply :: proc(socket: net.TCP_Socket, reply_code: byte, bind_addr: Maybe([4]byte) = nil, bind_port: u16 = 0) {
+send_socks5_reply :: proc(socket: net.TCP_Socket, reply_code: byte, bind_addr: Maybe([4]byte) = nil, bind_port: u16 = 0) -> bool {
     // Build reply: VER | REP | RSV | ATYP | BND.ADDR | BND.PORT
     buf: [10]byte
     buf[0] = SOCKS_VERSION
@@ -422,7 +453,16 @@ send_socks5_reply :: proc(socket: net.TCP_Socket, reply_code: byte, bind_addr: M
     buf[8] = byte(bind_port >> 8)
     buf[9] = byte(bind_port & 0xFF)
 
-    net.send_tcp(socket, buf[:])
+    // Send the reply and handle partial sends
+    sent := 0
+    for sent < len(buf) {
+        n, err := net.send_tcp(socket, buf[sent:])
+        if err != nil {
+            return false
+        }
+        sent += n
+    }
+    return true
 }
 
 handle_connect :: proc(ctx: ^Connection_Context) {
@@ -577,9 +617,17 @@ parse_args :: proc() {
         case "-buffer":
             if i + 1 < len(args) {
                 i += 1
-                // Parse buffer size
-                // Note: Odin's strconv is in core:strconv
-                // For simplicity, using default if parsing fails
+                buffer_val := args[i]
+                // Simple integer parsing
+                val := 0
+                for c in buffer_val {
+                    if c >= '0' && c <= '9' {
+                        val = val * 10 + int(c - '0')
+                    }
+                }
+                if val > 0 && val <= 1048576 { // Max 1MB buffer
+                    g_config.buffer_size = val
+                }
             }
         case "-h", "-help":
             print_help()
