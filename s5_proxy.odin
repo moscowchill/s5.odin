@@ -581,7 +581,7 @@ parse_args :: proc() {
     g_config.require_auth = false
     g_config.username = "admin"
     g_config.password = "password"
-    g_config.stealth_mode = true
+    g_config.stealth_mode = false  // Disabled by default - see STEALTH_REVIEW.md
     g_config.buffer_size = 16384 // 16KB default
     g_config.connect_timeout = 15 * time.Second
     g_config.read_timeout = 300 * time.Second
@@ -612,6 +612,8 @@ parse_args :: proc() {
                 i += 1
                 g_config.password = args[i]
             }
+        case "-stealth":
+            g_config.stealth_mode = true
         case "-no-stealth":
             g_config.stealth_mode = false
         case "-buffer":
@@ -648,12 +650,15 @@ print_help :: proc() {
     fmt.println("  -auth               Require username/password authentication")
     fmt.println("  -user <username>    Username for authentication (default: admin)")
     fmt.println("  -pass <password>    Password for authentication (default: password)")
-    fmt.println("  -no-stealth         Disable stealth timing features")
+    fmt.println("  -stealth            Enable timing obfuscation (disabled by default)")
+    fmt.println("  -no-stealth         Explicitly disable stealth (already default)")
     fmt.println("  -buffer <size>      Buffer size in bytes (default: 16384)")
     fmt.println("  -h, -help           Show this help message")
     fmt.println()
     fmt.println("Examples:")
     fmt.println("  s5_proxy -addr 0.0.0.0:1080")
     fmt.println("  s5_proxy -addr 127.0.0.1:9050 -auth -user admin -pass secret")
-    fmt.println("  s5_proxy -v -no-stealth")
+    fmt.println("  s5_proxy -v -buffer 32768")
+    fmt.println()
+    fmt.println("Note: Stealth mode is disabled by default. See STEALTH_REVIEW.md for details.")
 }
