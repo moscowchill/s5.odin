@@ -78,11 +78,6 @@ Relay_Context :: struct {
 // Global state
 g_config: Config
 g_active_connections: [dynamic]^Connection_Context
-g_connection_count: int
-g_connection_mutex: ^os.Handle
-
-// Connection limits (adjusted for small pentesting team)
-MAX_CONNECTIONS :: 1000  // Plenty for 1-2 users with aggressive scanning
 
 // Helper: Receive exactly N bytes (handles partial reads)
 recv_exactly :: proc(socket: net.TCP_Socket, buf: []byte) -> (ok: bool) {
@@ -138,21 +133,9 @@ main :: proc() {
             continue
         }
 
-        // Check connection limit
-        if g_connection_count >= MAX_CONNECTIONS {
-            if g_config.verbose {
-                log.warnf("Connection limit reached (%d), rejecting connection", MAX_CONNECTIONS)
-            }
-            net.close(client_socket)
-            continue
-        }
-
         if g_config.verbose {
             log.infof("New connection from: %v", client_endpoint)
         }
-
-        // Increment connection counter
-        g_connection_count += 1
 
         // Handle connection in new thread
         ctx := new(Connection_Context)
@@ -166,9 +149,6 @@ main :: proc() {
 handle_connection_thread :: proc(ctx: ^Connection_Context) {
     defer free(ctx)
     defer net.close(ctx.client_socket)
-    defer {
-        g_connection_count -= 1
-    }
 
     // Perform SOCKS5 handshake
     if !socks5_handshake(ctx.client_socket) {

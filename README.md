@@ -25,9 +25,9 @@ This implementation has been hardened for real-world traffic:
    - Partial send handling prevents hung connections
 
 3. **Resource Management**
-   - Connection limits to prevent file descriptor exhaustion
    - Configurable buffer sizes (default 16KB)
    - Proper thread lifecycle management
+   - Relies on OS file descriptor limits (ulimit)
 
 4. **Modern Architecture**
    - Native Odin implementation for better performance
@@ -36,9 +36,9 @@ This implementation has been hardened for real-world traffic:
 
 5. **Security Features**
    - Optional username/password authentication
-   - Connection limits (default 1,000 concurrent)
    - Input validation (domain/username/password lengths)
    - Minimal logging by default
+   - OS-level resource protection (ulimit)
 
 ## Building
 
@@ -224,7 +224,7 @@ Client → Handshake → Authentication (optional) → Request Parsing → Conne
 
 ### Threading Model
 
-- Main thread: Accept connections (with connection limits)
+- Main thread: Accept connections (unlimited, OS-bound)
 - Connection thread: Handle SOCKS5 protocol
 - Relay threads (2x): Bidirectional data transfer
 
@@ -232,9 +232,9 @@ Client → Handshake → Authentication (optional) → Request Parsing → Conne
 
 1. **Partial Read Protection**: recv_exactly() helper prevents partial TCP read failures
 2. **Memory Safety**: All allocations properly freed, zero leaks
-3. **Connection Limits**: Prevents file descriptor exhaustion (default 1,000)
-4. **Error Handling**: Robust handling of all socket operations
-5. **Input Validation**: Length checks for domains, usernames, passwords
+3. **Error Handling**: Robust handling of all socket operations
+4. **Input Validation**: Length checks for domains, usernames, passwords
+5. **OS Resource Limits**: Respects system ulimit for file descriptors
 
 ## Comparison with Original Go Implementation
 
@@ -244,7 +244,7 @@ Client → Handshake → Authentication (optional) → Request Parsing → Conne
 | Authentication | No auth only | No auth + user/pass |
 | Memory Leaks | Unknown | Zero (verified) |
 | Partial Reads | Not handled | Protected |
-| Connection Limits | None | Configurable (1,000) |
+| Connection Limits | None | None (OS-bound) |
 | Buffer Size | Fixed 8KB | Configurable (default 16KB) |
 | Logging | Basic | Verbose mode + minimal |
 | IPv6 Support | Basic | Full support |
@@ -259,7 +259,7 @@ Client → Handshake → Authentication (optional) → Request Parsing → Conne
 2. **Use TLS tunneling** for exposed proxies (e.g., stunnel, ssh -D)
 3. **Monitor logs** in verbose mode during testing only
 4. **Firewall rules** to restrict access by IP
-5. **Review connection limits** for your use case (default 1,000)
+5. **Adjust ulimit** if needed for high-concurrency scenarios (`ulimit -n 100000`)
 
 ### Detection Vectors
 
@@ -321,13 +321,15 @@ For high-concurrency scenarios, ensure adequate system resources.
 
 - Reduce buffer size for many small connections
 - Disable verbose logging
-- Check for connection leaks (should auto-cleanup with proper limits)
+- Check for connection leaks (should auto-cleanup)
 
-### Connection Limit Reached
+### File Descriptor Exhaustion
 
-- Review if 1,000 concurrent is appropriate for your use case
-- Edit `MAX_CONNECTIONS` in source and rebuild if needed
-- Check for hung connections (future work: socket timeouts)
+If you hit OS limits with many concurrent connections:
+- Check current limit: `ulimit -n`
+- Increase limit: `ulimit -n 100000` (temporary)
+- Permanent: Edit `/etc/security/limits.conf`
+- Consider if tool has connection leak bug
 
 ## Future Enhancements
 

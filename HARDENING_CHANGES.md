@@ -4,6 +4,8 @@
 
 This update addresses critical production-readiness issues discovered during code review. The original port was functional but had several vulnerabilities that would cause failures under real-world traffic conditions.
 
+**SUBSEQUENT UPDATE:** Connection limits and stealth mode were later removed as unnecessary for the target use case (internal VLAN pentesting). See commit history for details.
+
 ## Critical Issues Fixed
 
 ### 1. Memory Leaks (CRITICAL)
