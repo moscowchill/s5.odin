@@ -1,6 +1,6 @@
-# Stealth SOCKS5 Proxy Server (Odin)
+# SOCKS5 Proxy Server (Odin)
 
-A modern, high-performance SOCKS5 proxy server written in Odin, ported from the original [s5.go](https://github.com/ring04h/s5.go) with significant enhancements for red teaming operations.
+A production-ready, high-performance SOCKS5 proxy server written in Odin, ported from the original [s5.go](https://github.com/ring04h/s5.go) with significant hardening for reliability and security.
 
 ## Features
 
@@ -10,29 +10,35 @@ A modern, high-performance SOCKS5 proxy server written in Odin, ported from the 
 - **Address Types**: IPv4, IPv6, and domain name resolution
 - **Authentication**: No-auth mode and username/password authentication (RFC 1929)
 
-### Stealth Enhancements for Red Teaming
+### Production Hardening
 
-This implementation includes several features designed to evade detection and blend in with normal network traffic:
+This implementation has been hardened for real-world traffic:
 
-1. **Traffic Timing Obfuscation**
-   - Random micro-delays (0-5ms) between packet transmissions
-   - Connection establishment delays (10-100ms) to avoid burst patterns
-   - Accept delays (0-50ms) to randomize connection acceptance patterns
+1. **Memory Safety**
+   - Zero memory leaks (all allocations properly freed)
+   - Proper string cleanup in connection handlers
+   - No resource exhaustion under sustained load
 
-2. **Configurable Behavior**
-   - Adjustable buffer sizes to match different network profiles
-   - Minimal logging by default (stealth operation)
-   - Optional verbose mode for debugging
+2. **Network Resilience**
+   - Partial read protection (handles slow clients and network congestion)
+   - Robust error handling for all socket operations
+   - Partial send handling prevents hung connections
 
-3. **Modern Architecture**
+3. **Resource Management**
+   - Connection limits to prevent file descriptor exhaustion
+   - Configurable buffer sizes (default 16KB)
+   - Proper thread lifecycle management
+
+4. **Modern Architecture**
    - Native Odin implementation for better performance
    - Concurrent connection handling with threads
    - Efficient bidirectional data relay
 
-4. **Security Features**
+5. **Security Features**
    - Optional username/password authentication
-   - No persistent connection tracking (minimal memory footprint)
-   - Clean shutdown and resource management
+   - Connection limits (default 1,000 concurrent)
+   - Input validation (domain/username/password lengths)
+   - Minimal logging by default
 
 ## Building
 
@@ -114,11 +120,11 @@ Enable verbose logging:
 ./s5proxy -v -addr 127.0.0.1:1080
 ```
 
-### Stealth Mode
+### Buffer Configuration
 
-Stealth mode is **enabled by default**. To disable timing obfuscation:
+Adjust buffer size for performance tuning:
 ```bash
-./s5proxy -no-stealth
+./s5proxy -buffer 32768  # 32KB buffers for large transfers
 ```
 
 ## Command Line Options
@@ -130,7 +136,6 @@ Stealth mode is **enabled by default**. To disable timing obfuscation:
 | `-auth` | Require authentication | `false` |
 | `-user <username>` | Authentication username | `admin` |
 | `-pass <password>` | Authentication password | `password` |
-| `-no-stealth` | Disable timing obfuscation | Stealth enabled |
 | `-buffer <size>` | Buffer size in bytes | `16384` (16KB) |
 | `-h`, `-help` | Show help message | - |
 
@@ -170,19 +175,19 @@ proxychains curl https://ifconfig.me
 proxychains nmap -sT target.com
 ```
 
-## Red Teaming Use Cases
+## Pentesting Use Cases
 
 ### 1. Internal Network Pivoting
 
 Deploy on compromised host:
 ```bash
-./s5proxy -addr 0.0.0.0:1080 -auth -user pivot -pass [random-pass] -no-stealth
+./s5proxy -addr 0.0.0.0:1080 -auth -user pivot -pass [random-pass]
 ```
 
 Connect from attacker machine:
 ```bash
-ssh -D 1080 -N -f user@compromised-host
-# Or use the proxy directly if exposed
+ssh -L 1080:localhost:1080 user@compromised-host
+# Or use the proxy directly if network allows
 ```
 
 ### 2. Traffic Routing
@@ -197,17 +202,17 @@ Chain with other tools:
 ./s5proxy -addr 10.8.0.1:1080
 ```
 
-### 3. Egress Point Obfuscation
+### 3. Tool Aggregation
 
 ```bash
-# Listen on non-standard port with stealth timing
-./s5proxy -addr 0.0.0.0:8443 -auth -user web -pass [pass]
-```
+# Single proxy endpoint for multiple tools
+./s5proxy -addr 0.0.0.0:1080 -auth -user team -pass [pass]
 
-The stealth timing features help avoid detection by:
-- Breaking up consistent timing patterns
-- Mimicking human interaction delays
-- Reducing network burst signatures
+# Use with all your pentesting tools
+nmap --proxies socks5://team:pass@proxy:1080 target
+burpsuite (configure SOCKS5 proxy)
+sqlmap --proxy=socks5://team:pass@proxy:1080 ...
+```
 
 ## Architecture
 
@@ -219,17 +224,17 @@ Client → Handshake → Authentication (optional) → Request Parsing → Conne
 
 ### Threading Model
 
-- Main thread: Accept connections
+- Main thread: Accept connections (with connection limits)
 - Connection thread: Handle SOCKS5 protocol
 - Relay threads (2x): Bidirectional data transfer
 
-### Stealth Features Implementation
+### Hardening Features
 
-1. **Accept Loop**: Random 0-50ms delay between accepts
-2. **Connect Delay**: Random 10-100ms delay before target connection
-3. **Relay Micro-delays**: Random 0-5ms delays during data transfer
-
-These delays are small enough to not significantly impact performance but large enough to break statistical timing analysis.
+1. **Partial Read Protection**: recv_exactly() helper prevents partial TCP read failures
+2. **Memory Safety**: All allocations properly freed, zero leaks
+3. **Connection Limits**: Prevents file descriptor exhaustion (default 1,000)
+4. **Error Handling**: Robust handling of all socket operations
+5. **Input Validation**: Length checks for domains, usernames, passwords
 
 ## Comparison with Original Go Implementation
 
@@ -237,7 +242,9 @@ These delays are small enough to not significantly impact performance but large 
 |---------|----------------|-----------|
 | Language | Go | Odin |
 | Authentication | No auth only | No auth + user/pass |
-| Stealth Features | None | Timing obfuscation |
+| Memory Leaks | Unknown | Zero (verified) |
+| Partial Reads | Not handled | Protected |
+| Connection Limits | None | Configurable (1,000) |
 | Buffer Size | Fixed 8KB | Configurable (default 16KB) |
 | Logging | Basic | Verbose mode + minimal |
 | IPv6 Support | Basic | Full support |
@@ -252,23 +259,23 @@ These delays are small enough to not significantly impact performance but large 
 2. **Use TLS tunneling** for exposed proxies (e.g., stunnel, ssh -D)
 3. **Monitor logs** in verbose mode during testing only
 4. **Firewall rules** to restrict access by IP
-5. **Disable stealth** for maximum performance if detection isn't a concern
+5. **Review connection limits** for your use case (default 1,000)
 
 ### Detection Vectors
 
-Even with stealth features, proxies can be detected by:
-- Deep packet inspection (use encrypted tunnels)
-- Active probing (use authentication + firewall rules)
-- Behavioral analysis over long periods
-- TLS fingerprinting (if using HTTPS through proxy)
+SOCKS5 proxies can be detected by:
+- **Deep packet inspection** - SOCKS5 handshake is plaintext and distinctive
+- **Active probing** - Blue teams can test if your port responds to SOCKS5
+- **Behavioral analysis** - Many diverse connections from single source
+- **TLS fingerprinting** - If proxying HTTPS, downstream fingerprints visible
 
 ### Mitigation Strategies
 
-1. **Layer tunneling**: Wrap in SSH/TLS/VPN
-2. **Port selection**: Use common ports (443, 8080)
-3. **Access control**: IP whitelisting + authentication
-4. **Traffic shaping**: Adjust buffer sizes and timing
-5. **Rotation**: Change proxy instances regularly
+1. **Layer tunneling**: Wrap in SSH/TLS/VPN (provides actual encryption)
+2. **Port selection**: Use common ports (443, 8080, 22)
+3. **Access control**: IP whitelisting + strong authentication
+4. **Buffer tuning**: Adjust buffer sizes for your traffic patterns
+5. **Monitoring**: Use verbose mode to detect unusual activity
 
 ## Performance Tuning
 
@@ -306,30 +313,37 @@ For high-concurrency scenarios, ensure adequate system resources.
 
 ### Slow Performance
 
-- Disable stealth mode: `-no-stealth`
-- Increase buffer size: `-buffer 65536`
+- Increase buffer size: `-buffer 65536` (for large transfers)
 - Check network latency to target
+- Verify no bottlenecks on network path
 
 ### High CPU Usage
 
 - Reduce buffer size for many small connections
 - Disable verbose logging
-- Check for connection leaks (should auto-cleanup)
+- Check for connection leaks (should auto-cleanup with proper limits)
+
+### Connection Limit Reached
+
+- Review if 1,000 concurrent is appropriate for your use case
+- Edit `MAX_CONNECTIONS` in source and rebuild if needed
+- Check for hung connections (future work: socket timeouts)
 
 ## Future Enhancements
 
 Potential additions for future versions:
 
+- [ ] Socket timeouts (prevent Slowloris attacks)
+- [ ] Per-IP rate limiting
 - [ ] UDP ASSOCIATE implementation
 - [ ] BIND command support
-- [ ] TLS/SSL wrapper support
-- [ ] Traffic encryption between client and proxy
+- [ ] TLS/SSL wrapper support (proper encryption)
 - [ ] Connection pooling and reuse
 - [ ] Access control lists (ACL)
 - [ ] Bandwidth throttling
 - [ ] Connection statistics and monitoring
-- [ ] Multi-hop proxy chaining
-- [ ] Protocol obfuscation (looks like HTTPS, DNS, etc.)
+- [ ] Graceful shutdown (SIGTERM handling)
+- [ ] Configuration file support
 
 ## License
 
@@ -348,9 +362,10 @@ This is a port and enhancement of the original s5.go project. Use responsibly an
 
 Improvements welcome:
 - Protocol compliance enhancements
-- Additional stealth features
+- Socket timeout implementation
+- Per-IP rate limiting
 - Performance optimizations
-- Better error handling
+- Additional error handling
 - Cross-platform testing
 
 ## Disclaimer

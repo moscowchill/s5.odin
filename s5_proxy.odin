@@ -1,13 +1,13 @@
 /*
-   Stealth SOCKS5 Proxy Server in Odin
+   SOCKS5 Proxy Server in Odin
 
-   Modern port of s5.go with enhanced stealth features for red teaming:
+   Production-ready SOCKS5 proxy with robust error handling:
    - Configurable timeouts and buffer sizes
-   - Connection fingerprint randomization
-   - Traffic timing obfuscation
-   - Minimal logging by default
-   - UDP associate support
+   - Connection limits to prevent resource exhaustion
+   - Partial read protection for network resilience
+   - Memory leak free
    - Username/password authentication option
+   - Minimal logging by default
 
    Usage:
      odin run s5_proxy.odin -- -addr 127.0.0.1:1080
@@ -24,10 +24,6 @@ import "core:os"
 import "core:strings"
 import "core:time"
 import "core:thread"
-import "core:mem"
-import "core:slice"
-import "core:math/rand"
-import "core:encoding/endian"
 
 // SOCKS5 Protocol Constants
 SOCKS_VERSION :: 0x05
@@ -56,7 +52,6 @@ Config :: struct {
     require_auth:    bool,
     username:        string,
     password:        string,
-    stealth_mode:    bool,
     buffer_size:     int,
     connect_timeout: time.Duration,
     read_timeout:    time.Duration,
@@ -78,7 +73,6 @@ Relay_Context :: struct {
     dst:      net.TCP_Socket,
     buffer:   []byte,
     done:     bool,
-    stealth:  bool,
 }
 
 // Global state
@@ -106,17 +100,13 @@ recv_exactly :: proc(socket: net.TCP_Socket, buf: []byte) -> (ok: bool) {
 main :: proc() {
     context.logger = log.create_console_logger()
 
-    // Initialize random generator for stealth features
-    rand.reset(u64(time.now()._nsec))
-
     // Parse command line arguments
     parse_args()
 
     if g_config.verbose {
-        log.info("Starting Stealth SOCKS5 Proxy Server")
+        log.info("Starting SOCKS5 Proxy Server")
         log.infof("Listening on: %s", g_config.listen_addr)
         log.infof("Authentication: %v", g_config.require_auth)
-        log.infof("Stealth mode: %v", g_config.stealth_mode)
     }
 
     // Parse endpoint
@@ -170,12 +160,6 @@ main :: proc() {
         ctx.start_time = time.now()
 
         thread.create_and_start_with_poly_data(ctx, handle_connection_thread)
-
-        // Small random delay for stealth (0-50ms)
-        if g_config.stealth_mode {
-            delay := rand.float32_range(0, 50)
-            time.sleep(time.Duration(delay * f32(time.Millisecond)))
-        }
     }
 }
 
@@ -483,12 +467,6 @@ handle_connect :: proc(ctx: ^Connection_Context) {
         return
     }
 
-    // Add stealth delay before connecting (10-100ms)
-    if g_config.stealth_mode {
-        delay := rand.float32_range(10, 100)
-        time.sleep(time.Duration(delay * f32(time.Millisecond)))
-    }
-
     // Connect to target
     target_socket, dial_err := net.dial_tcp(target_endpoint)
     if dial_err != nil {
@@ -523,13 +501,11 @@ relay_data :: proc(client: net.TCP_Socket, target: net.TCP_Socket) {
     ctx1.src = client
     ctx1.dst = target
     ctx1.buffer = client_to_target_buf
-    ctx1.stealth = g_config.stealth_mode
 
     ctx2 := new(Relay_Context)
     ctx2.src = target
     ctx2.dst = client
     ctx2.buffer = target_to_client_buf
-    ctx2.stealth = g_config.stealth_mode
 
     // Start relay threads
     t1 := thread.create_and_start_with_poly_data(ctx1, relay_thread)
@@ -547,12 +523,6 @@ relay_data :: proc(client: net.TCP_Socket, target: net.TCP_Socket) {
 
 relay_thread :: proc(ctx: ^Relay_Context) {
     for {
-        // Add random micro-delays for traffic analysis resistance
-        if ctx.stealth {
-            delay := rand.float32_range(0, 5)
-            time.sleep(time.Duration(delay * f32(time.Millisecond)))
-        }
-
         n, err := net.recv_tcp(ctx.src, ctx.buffer)
         if err != nil || n == 0 {
             break
@@ -581,7 +551,6 @@ parse_args :: proc() {
     g_config.require_auth = false
     g_config.username = "admin"
     g_config.password = "password"
-    g_config.stealth_mode = false  // Disabled by default - see STEALTH_REVIEW.md
     g_config.buffer_size = 16384 // 16KB default
     g_config.connect_timeout = 15 * time.Second
     g_config.read_timeout = 300 * time.Second
@@ -612,10 +581,6 @@ parse_args :: proc() {
                 i += 1
                 g_config.password = args[i]
             }
-        case "-stealth":
-            g_config.stealth_mode = true
-        case "-no-stealth":
-            g_config.stealth_mode = false
         case "-buffer":
             if i + 1 < len(args) {
                 i += 1
@@ -639,7 +604,7 @@ parse_args :: proc() {
 }
 
 print_help :: proc() {
-    fmt.println("Stealth SOCKS5 Proxy Server")
+    fmt.println("SOCKS5 Proxy Server")
     fmt.println()
     fmt.println("Usage:")
     fmt.println("  s5_proxy [options]")
@@ -650,8 +615,6 @@ print_help :: proc() {
     fmt.println("  -auth               Require username/password authentication")
     fmt.println("  -user <username>    Username for authentication (default: admin)")
     fmt.println("  -pass <password>    Password for authentication (default: password)")
-    fmt.println("  -stealth            Enable timing obfuscation (disabled by default)")
-    fmt.println("  -no-stealth         Explicitly disable stealth (already default)")
     fmt.println("  -buffer <size>      Buffer size in bytes (default: 16384)")
     fmt.println("  -h, -help           Show this help message")
     fmt.println()
@@ -659,6 +622,4 @@ print_help :: proc() {
     fmt.println("  s5_proxy -addr 0.0.0.0:1080")
     fmt.println("  s5_proxy -addr 127.0.0.1:9050 -auth -user admin -pass secret")
     fmt.println("  s5_proxy -v -buffer 32768")
-    fmt.println()
-    fmt.println("Note: Stealth mode is disabled by default. See STEALTH_REVIEW.md for details.")
 }
