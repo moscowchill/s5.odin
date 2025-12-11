@@ -458,17 +458,24 @@ relay_socks_to_bc_thread :: proc(args: ^Relay_Args) {
     buffer := make([]u8, 16384)
     defer delete(buffer)
 
+    fmt.printf("[RELAY] socks_to_bc thread started for session %d\n", args.session_id)
+
     for args.bc_client.mux.is_running {
         n, err := net.recv_tcp(args.socks_socket, buffer)
+        fmt.printf("[RELAY] recv from curl: n=%d, err=%v\n", n, err)
         if err != nil || n == 0 {
+            fmt.printf("[RELAY] breaking loop: err=%v, n=%d\n", err, n)
             break
         }
 
+        fmt.printf("[RELAY] sending %d bytes to bc client via session %d\n", n, args.session_id)
         if !protocol.mux_session_send(args.bc_client.mux, args.session_id, buffer[:n]) {
+            fmt.printf("[RELAY] mux_session_send failed\n")
             break
         }
     }
 
+    fmt.printf("[RELAY] loop exited, closing session %d\n", args.session_id)
     // Close session
     protocol.mux_session_close(args.bc_client.mux, args.session_id, .NORMAL)
 
@@ -564,10 +571,13 @@ run_socks_listener :: proc() {
 
 handle_socks_client_thread :: proc(socket: net.TCP_Socket) {
     context.logger = log.create_console_logger()
-    defer net.close(socket)
+    // NOTE: Do NOT defer close the socket here!
+    // If the session succeeds, the relay thread takes ownership.
+    // If the session fails, we close it explicitly.
 
     // SOCKS5 handshake
     if !socks_handshake(socket) {
+        net.close(socket)
         return
     }
 
@@ -575,12 +585,14 @@ handle_socks_client_thread :: proc(socket: net.TCP_Socket) {
     host, port, cmd, ok := parse_socks_request(socket)
     if !ok {
         send_socks_reply(socket, REP_GENERAL_FAILURE)
+        net.close(socket)
         return
     }
     defer delete(host)
 
     if cmd != CMD_CONNECT {
         send_socks_reply(socket, REP_COMMAND_NOT_SUPPORTED)
+        net.close(socket)
         return
     }
 
@@ -595,6 +607,7 @@ handle_socks_client_thread :: proc(socket: net.TCP_Socket) {
             log.warn("No backconnect clients available")
         }
         send_socks_reply(socket, REP_GENERAL_FAILURE)
+        net.close(socket)
         return
     }
 
@@ -682,6 +695,7 @@ handle_socks_client_thread :: proc(socket: net.TCP_Socket) {
             sync.mutex_unlock(&g_pending_mutex)
 
             send_socks_reply(socket, REP_GENERAL_FAILURE)
+            net.close(socket)
             return
         }
 
@@ -700,6 +714,7 @@ handle_socks_client_thread :: proc(socket: net.TCP_Socket) {
             sync.mutex_unlock(&g_pending_mutex)
 
             send_socks_reply(socket, REP_GENERAL_FAILURE)
+            net.close(socket)
             return
         }
     }
@@ -798,7 +813,8 @@ socks_authenticate :: proc(socket: net.TCP_Socket) -> bool {
     if err != nil || n != ulen {
         return false
     }
-    username := string(buf[:ulen])
+    username := strings.clone_from_bytes(buf[:ulen])
+    defer delete(username)
 
     n, err = net.recv_tcp(socket, buf[:1])
     if err != nil || n != 1 {
@@ -810,9 +826,14 @@ socks_authenticate :: proc(socket: net.TCP_Socket) -> bool {
     if err != nil || n != plen {
         return false
     }
-    password := string(buf[:plen])
+    password := strings.clone_from_bytes(buf[:plen])
+    defer delete(password)
+
+    fmt.printf("[SOCKS AUTH] Received: user='%s' (%d), pass='%s' (%d)\n", username, len(username), password, len(password))
+    fmt.printf("[SOCKS AUTH] Expected: user='%s' (%d), pass='%s' (%d)\n", g_config.socks_user, len(g_config.socks_user), g_config.socks_pass, len(g_config.socks_pass))
 
     auth_ok := username == g_config.socks_user && password == g_config.socks_pass
+    fmt.printf("[SOCKS AUTH] Result: %v\n", auth_ok)
 
     response: [2]byte = {0x01, auth_ok ? 0x00 : 0x01}
     net.send_tcp(socket, response[:])

@@ -882,10 +882,12 @@ bc_connect_target_thread :: proc(args: ^BC_Conn_Args) {
     session.target_socket = target_socket
     session.connected = true
 
+    fmt.printf("[BC] Session %d: connected to %s\n", session_id, target_addr)
     if g_config.verbose {
         log.infof("Session %d: connected to %s", session_id, target_addr)
     }
 
+    fmt.printf("[BC] Session %d: sending SESSION_READY\n", session_id)
     protocol.mux_send_session_ready(g_bc_mux, session_id, .CONNECTED)
 
     // Start reading from target and sending to mux
@@ -918,16 +920,29 @@ bc_relay_from_target :: proc(session: ^BC_Session) {
 
 // Callback: data received for session
 bc_on_session_data :: proc(mux: ^protocol.Multiplexer, session_id: u32, data: []u8) {
+    fmt.printf("[BC] on_session_data: session=%d, len=%d\n", session_id, len(data))
+
     sync.mutex_lock(&g_bc_sessions_mutex)
     session, exists := g_bc_sessions[session_id]
     sync.mutex_unlock(&g_bc_sessions_mutex)
 
-    if !exists || !session.connected {
+    if !exists {
+        fmt.printf("[BC] on_session_data: session %d not found\n", session_id)
+        return
+    }
+
+    if !session.connected {
+        fmt.printf("[BC] on_session_data: session %d not connected yet\n", session_id)
         return
     }
 
     // Write to target socket
-    protocol.write_all(session.target_socket, data)
+    fmt.printf("[BC] on_session_data: writing to target socket\n")
+    if !protocol.write_all(session.target_socket, data) {
+        fmt.printf("[BC] on_session_data: write failed\n")
+    } else {
+        fmt.printf("[BC] on_session_data: write succeeded\n")
+    }
 }
 
 // Callback: session closed by server

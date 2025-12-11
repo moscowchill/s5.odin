@@ -41,3 +41,4 @@ desktop.ini
 s5_proxy
 cmd/server/backconnect_server
 *.exe
+.claude/settings.local.json

@@ -12,6 +12,7 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 import "core:mem"
+import "core:fmt"
 
 // Session states
 Session_State :: enum {
@@ -269,8 +270,16 @@ mux_session_cleanup :: proc(session: ^Mux_Session) {
 // Queue a message for sending
 mux_queue_send :: proc(mux: ^Multiplexer, msg: []u8) -> bool {
     if !mux.is_running {
+        fmt.printf("[MUX] queue_send: mux not running, dropping message (len=%d)\n", len(msg))
         delete(msg)
         return false
+    }
+
+    // Decode message type for logging
+    if len(msg) >= 5 {
+        msg_type := Message_Type(msg[0])
+        session_id := u32(msg[1]) << 24 | u32(msg[2]) << 16 | u32(msg[3]) << 8 | u32(msg[4])
+        fmt.printf("[MUX] queue_send: type=%v, session=%d, len=%d\n", msg_type, session_id, len(msg))
     }
 
     sync.mutex_lock(&mux.send_mutex)
@@ -323,10 +332,12 @@ mux_send_disconnect :: proc(mux: ^Multiplexer) -> bool {
 // Reader thread - reads messages from socket and dispatches
 @(private)
 mux_reader_proc :: proc(mux: ^Multiplexer) {
+    fmt.printf("[MUX] Reader thread started\n")
     for !mux.should_stop {
         // Read encrypted message
         data, ok := frame_read_encrypted(mux.socket, mux.crypto)
         if !ok {
+            fmt.printf("[MUX] Reader: frame_read_encrypted failed\n")
             if !mux.should_stop {
                 if mux.on_disconnect != nil {
                     mux.on_disconnect(mux)
@@ -338,9 +349,12 @@ mux_reader_proc :: proc(mux: ^Multiplexer) {
         // Decode message
         msg_type, session_id, _, decode_ok := frame_decode(data)
         if !decode_ok {
+            fmt.printf("[MUX] Reader: frame_decode failed\n")
             delete(data)
             continue
         }
+
+        fmt.printf("[MUX] Reader received: type=%v, session=%d, len=%d\n", msg_type, session_id, len(data))
 
         payload := get_payload(data)
 
@@ -435,6 +449,7 @@ mux_reader_proc :: proc(mux: ^Multiplexer) {
 // Writer thread - sends queued messages
 @(private)
 mux_writer_proc :: proc(mux: ^Multiplexer) {
+    fmt.printf("[MUX] Writer thread started\n")
     for !mux.should_stop {
         // Check for messages to send
         msg: Maybe([]u8) = nil
@@ -446,20 +461,29 @@ mux_writer_proc :: proc(mux: ^Multiplexer) {
         sync.mutex_unlock(&mux.send_mutex)
 
         if data, ok := msg.?; ok {
+            // Log what we're sending
+            if len(data) >= 5 {
+                msg_type := Message_Type(data[0])
+                session_id := u32(data[1]) << 24 | u32(data[2]) << 16 | u32(data[3]) << 8 | u32(data[4])
+                fmt.printf("[MUX] Writer sending: type=%v, session=%d, len=%d\n", msg_type, session_id, len(data))
+            }
             // Send encrypted
             if !frame_write_encrypted(mux.socket, mux.crypto, data) {
+                fmt.printf("[MUX] Writer: frame_write_encrypted failed\n")
                 delete(data)
                 if !mux.should_stop && mux.on_disconnect != nil {
                     mux.on_disconnect(mux)
                 }
                 break
             }
+            fmt.printf("[MUX] Writer: sent successfully\n")
             delete(data)
         } else {
             // No messages, sleep briefly
             time.sleep(1 * time.Millisecond)
         }
     }
+    fmt.printf("[MUX] Writer thread exiting\n")
 }
 
 // Keepalive thread - sends periodic pings
