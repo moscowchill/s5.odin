@@ -23,6 +23,7 @@ KEY_SIZE           :: 32
 TAG_SIZE           :: 16
 COUNTER_SIZE       :: 8   // 8-byte counter, padded to 12 for ChaCha20-Poly1305
 OTP_WINDOW_SECS    :: 4 * 60 * 60  // 4 hours in seconds
+OTP_SHORT_SIZE     :: 4   // 4 bytes = 8 hex chars for display/input
 
 // Crypto context for an encrypted session
 Crypto_Context :: struct {
@@ -439,6 +440,51 @@ get_current_otp_window :: proc(unix_time: i64) -> i64 {
 generate_current_otp :: proc(psk: [PSK_SIZE]u8, unix_time: i64) -> [PSK_SIZE]u8 {
     window := get_current_otp_window(unix_time)
     return generate_otp(psk, window)
+}
+
+// Get short OTP (first 4 bytes / 8 hex chars) for display
+get_short_otp :: proc(full_otp: [PSK_SIZE]u8) -> [OTP_SHORT_SIZE]u8 {
+    short: [OTP_SHORT_SIZE]u8
+    short[0] = full_otp[0]
+    short[1] = full_otp[1]
+    short[2] = full_otp[2]
+    short[3] = full_otp[3]
+    return short
+}
+
+// Expand short OTP to full PSK size for crypto operations
+// Uses SHA256(short_otp) to get full 32 bytes
+expand_short_otp :: proc(short_otp: [OTP_SHORT_SIZE]u8) -> [PSK_SIZE]u8 {
+    expanded: [PSK_SIZE]u8
+    // Copy to local since value params aren't addressable
+    local := short_otp
+    hash.hash_bytes_to_buffer(.SHA256, local[:], expanded[:])
+    return expanded
+}
+
+// Check if short OTP matches any valid window
+verify_short_otp :: proc(psk: [PSK_SIZE]u8, short_otp: [OTP_SHORT_SIZE]u8, unix_time: i64) -> (valid: bool, full_otp: [PSK_SIZE]u8) {
+    window := get_current_otp_window(unix_time)
+
+    // Check current and previous window
+    windows := [2]i64{window, window - 1}
+    for w in windows {
+        candidate := generate_otp(psk, w)
+        candidate_short := get_short_otp(candidate)
+
+        match := true
+        for i in 0..<OTP_SHORT_SIZE {
+            if candidate_short[i] != short_otp[i] {
+                match = false
+                break
+            }
+        }
+        if match {
+            return true, candidate
+        }
+    }
+
+    return false, {}
 }
 
 // Generate list of valid OTPs (current window ± 1 for clock drift tolerance)

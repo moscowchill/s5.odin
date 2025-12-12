@@ -179,11 +179,12 @@ main :: proc() {
     thread.destroy(socks_thread)
 }
 
-// Display current OTP
+// Display current OTP (short 8-char version)
 display_current_otp :: proc() {
     unix_time := time.time_to_unix(time.now())
-    otp := protocol.generate_current_otp(g_config.master_psk, unix_time)
-    otp_hex := protocol.bytes_to_hex(otp[:])
+    full_otp := protocol.generate_current_otp(g_config.master_psk, unix_time)
+    short_otp := protocol.get_short_otp(full_otp)
+    otp_hex := protocol.bytes_to_hex(short_otp[:])
     defer delete(otp_hex)
 
     remaining := protocol.otp_seconds_remaining(unix_time)
@@ -192,29 +193,34 @@ display_current_otp :: proc() {
 
     fmt.printf("\n")
     fmt.printf("========================================\n")
-    fmt.printf("  OTP (valid for %dh %dm):\n", hours, mins)
-    fmt.printf("  %s\n", otp_hex)
+    fmt.printf("  OTP (valid for %dh %dm): %s\n", hours, mins, otp_hex)
     fmt.printf("========================================\n")
     fmt.printf("\n")
 
     // Update current window
     g_config.current_otp_window = protocol.get_current_otp_window(unix_time)
 
-    // Update allowed_psks with current valid OTPs
+    // Update allowed_psks with current valid OTPs (full versions for crypto)
     refresh_otp_psks()
 }
 
 // Refresh the OTP-derived PSKs in allowed_psks
+// Server generates full OTP -> extracts short OTP -> expands via SHA256
+// This matches what the client does with the 8-char OTP
 refresh_otp_psks :: proc() {
     unix_time := time.time_to_unix(time.now())
-    valid_otps := protocol.generate_valid_otps(g_config.master_psk, unix_time)
-    defer delete(valid_otps)
+    window := protocol.get_current_otp_window(unix_time)
 
-    // Clear existing and add new OTPs
-    // Note: In OTP mode, allowed_psks only contains OTP-derived keys
+    // Clear existing and add new expanded OTPs
     clear(&g_config.allowed_psks)
-    for otp in valid_otps {
-        append(&g_config.allowed_psks, otp)
+
+    // Add current and previous window (for clock drift)
+    windows := [2]i64{window, window - 1}
+    for w in windows {
+        full_otp := protocol.generate_otp(g_config.master_psk, w)
+        short_otp := protocol.get_short_otp(full_otp)
+        expanded := protocol.expand_short_otp(short_otp)
+        append(&g_config.allowed_psks, expanded)
     }
 }
 

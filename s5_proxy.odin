@@ -1073,13 +1073,16 @@ parse_args :: proc() {
                 }
             }
         case "-bc-otp":
-            // OTP is used exactly like PSK - it's just a time-derived secret
+            // OTP is 8 hex chars, expanded to full PSK for crypto
             if i + 1 < len(args) {
                 i += 1
-                if !protocol.hex_to_bytes(args[i], g_config.bc_psk[:]) {
-                    fmt.eprintln("Error: Invalid OTP (must be 64 hex characters)")
+                short_otp: [protocol.OTP_SHORT_SIZE]u8
+                if !protocol.hex_to_bytes(args[i], short_otp[:]) {
+                    fmt.eprintln("Error: Invalid OTP (must be 8 hex characters)")
                     os.exit(1)
                 }
+                // Expand short OTP to full PSK
+                g_config.bc_psk = protocol.expand_short_otp(short_otp)
             }
         case "-bc-pubkey":
             if i + 1 < len(args) {
@@ -1136,7 +1139,7 @@ print_help :: proc() {
     fmt.println("Backconnect Mode Options:")
     fmt.println("  -backconnect        Enable backconnect client mode")
     fmt.println("  -bc-server <addr>   Backconnect server address (host:port)")
-    fmt.println("  -bc-otp <hex>       One-time password from server (64 hex chars)")
+    fmt.println("  -bc-otp <hex>       One-time password from server (8 hex chars)")
     fmt.println("  -bc-psk <hex>       Pre-shared key - use only with -no-otp server")
     fmt.println("  -bc-pubkey <hex>    Server public key for pinning (optional)")
     fmt.println("  -no-reconnect       Disable automatic reconnection")
