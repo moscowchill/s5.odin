@@ -68,6 +68,10 @@ BC_Client :: struct {
     last_activity:    time.Time,
     active_sessions:  int,
     is_authenticated: bool,
+    // Per-client SOCKS5 port
+    socks_port:       u16,
+    socks_listener:   net.TCP_Socket,
+    socks_running:    bool,
 }
 
 // Pending SOCKS5 request waiting for backconnect session
@@ -105,6 +109,12 @@ g_active: map[u32]^Active_Session    // session_id -> active session
 g_active_mutex: sync.Mutex
 g_round_robin_idx: u32 = 0
 
+// Port allocation for per-client SOCKS5 listeners
+PORT_RANGE_START :: 6000
+PORT_RANGE_END   :: 8000
+g_allocated_ports: map[u16]bool  // port -> in_use
+g_ports_mutex: sync.Mutex
+
 main :: proc() {
     context.logger = log.create_console_logger()
 
@@ -126,8 +136,9 @@ main :: proc() {
     g_clients = make(map[u32]^BC_Client)
     g_pending = make(map[u32]^Pending_Request)
     g_active = make(map[u32]^Active_Session)
+    g_allocated_ports = make(map[u16]bool)
 
-    // Start SOCKS5 listener
+    // Start shared SOCKS5 listener (round-robin across all clients)
     socks_thread := thread.create_and_start(run_socks_listener)
 
     // Start backconnect listener (runs in main thread)
@@ -135,6 +146,247 @@ main :: proc() {
 
     thread.join(socks_thread)
     thread.destroy(socks_thread)
+}
+
+// ============================================================================
+// Port Allocation
+// ============================================================================
+
+// Allocate a port from the range for a client
+allocate_port :: proc() -> (port: u16, ok: bool) {
+    sync.mutex_lock(&g_ports_mutex)
+    defer sync.mutex_unlock(&g_ports_mutex)
+
+    for p := u16(PORT_RANGE_START); p <= PORT_RANGE_END; p += 1 {
+        if !(p in g_allocated_ports) {
+            g_allocated_ports[p] = true
+            return p, true
+        }
+    }
+    return 0, false
+}
+
+// Free an allocated port
+free_port :: proc(port: u16) {
+    sync.mutex_lock(&g_ports_mutex)
+    defer sync.mutex_unlock(&g_ports_mutex)
+
+    delete_key(&g_allocated_ports, port)
+}
+
+// Start a dedicated SOCKS5 listener for a specific client
+start_client_socks_listener :: proc(client: ^BC_Client) -> bool {
+    // Allocate port
+    port, ok := allocate_port()
+    if !ok {
+        log.error("Failed to allocate port for client - port range exhausted")
+        return false
+    }
+
+    client.socks_port = port
+
+    // Create listener
+    addr_str := fmt.tprintf("0.0.0.0:%d", port)
+    endpoint, parse_ok := net.parse_endpoint(addr_str)
+    if !parse_ok {
+        free_port(port)
+        return false
+    }
+
+    listen_socket, listen_err := net.listen_tcp(endpoint)
+    if listen_err != nil {
+        if g_config.verbose {
+            log.errorf("Failed to bind client SOCKS5 listener on port %d: %v", port, listen_err)
+        }
+        free_port(port)
+        return false
+    }
+
+    client.socks_listener = listen_socket
+    client.socks_running = true
+
+    // Start listener thread
+    thread.create_and_start_with_poly_data(client, run_client_socks_listener_thread)
+
+    return true
+}
+
+// Stop the dedicated SOCKS5 listener for a client
+stop_client_socks_listener :: proc(client: ^BC_Client) {
+    if client.socks_running {
+        client.socks_running = false
+        net.close(client.socks_listener)
+        free_port(client.socks_port)
+    }
+}
+
+// Per-client SOCKS5 listener thread
+run_client_socks_listener_thread :: proc(client: ^BC_Client) {
+    context.logger = log.create_console_logger()
+
+    if g_config.verbose {
+        log.infof("Client %d SOCKS5 listener started on port %d", client.id, client.socks_port)
+    }
+
+    for client.socks_running && client.mux.is_running {
+        client_socket, _, accept_err := net.accept_tcp(client.socks_listener)
+        if accept_err != nil {
+            if client.socks_running {
+                continue
+            }
+            break
+        }
+
+        // Create args for the handler
+        args := new(Client_Socks_Args)
+        args.socks_socket = client_socket
+        args.bc_client = client
+
+        thread.create_and_start_with_poly_data(args, handle_client_socks_thread)
+    }
+
+    if g_config.verbose {
+        log.infof("Client %d SOCKS5 listener stopped", client.id)
+    }
+}
+
+// Args for per-client SOCKS5 handler
+Client_Socks_Args :: struct {
+    socks_socket: net.TCP_Socket,
+    bc_client:    ^BC_Client,
+}
+
+// Handle SOCKS5 connection for a specific client
+handle_client_socks_thread :: proc(args: ^Client_Socks_Args) {
+    context.logger = log.create_console_logger()
+    defer free(args)
+
+    socket := args.socks_socket
+    bc_client := args.bc_client
+
+    // SOCKS5 handshake
+    if !socks_handshake(socket) {
+        net.close(socket)
+        return
+    }
+
+    // Parse request
+    host, port, cmd, ok := parse_socks_request(socket)
+    if !ok {
+        send_socks_reply(socket, REP_GENERAL_FAILURE)
+        net.close(socket)
+        return
+    }
+    defer delete(host)
+
+    if cmd != CMD_CONNECT {
+        send_socks_reply(socket, REP_COMMAND_NOT_SUPPORTED)
+        net.close(socket)
+        return
+    }
+
+    if g_config.verbose {
+        log.infof("Client %d SOCKS5: %s:%d", bc_client.id, host, port)
+    }
+
+    // Check if client is still connected
+    if !bc_client.mux.is_running {
+        send_socks_reply(socket, REP_GENERAL_FAILURE)
+        net.close(socket)
+        return
+    }
+
+    // Create session on this specific client
+    session_id := protocol.mux_session_create(bc_client.mux, host, port)
+
+    if g_config.verbose {
+        log.infof("Routing %s:%d through BC client %d (session %d)", host, port, bc_client.id, session_id)
+    }
+
+    // Create pending request
+    pending := new(Pending_Request)
+    pending.socks_socket = socket
+    pending.session_id = session_id
+    pending.bc_client_id = bc_client.id
+    pending.target_host = strings.clone(host)
+    pending.target_port = port
+    pending.created_at = time.now()
+
+    sync.mutex_lock(&g_pending_mutex)
+    g_pending[session_id] = pending
+    sync.mutex_unlock(&g_pending_mutex)
+
+    // Send SESSION_NEW to backconnect client
+    atyp: protocol.Address_Type
+    addr_bytes: []u8
+
+    if ep, ep_ok := net.parse_endpoint(fmt.tprintf("%s:0", host)); ep_ok {
+        #partial switch v in ep.address {
+        case net.IP4_Address:
+            atyp = .IPV4
+            addr_bytes = make([]u8, 4)
+            addr_bytes[0] = v[0]
+            addr_bytes[1] = v[1]
+            addr_bytes[2] = v[2]
+            addr_bytes[3] = v[3]
+        case:
+            atyp = .DOMAIN
+            addr_bytes = transmute([]u8)host
+        }
+    } else {
+        atyp = .DOMAIN
+        addr_bytes = transmute([]u8)host
+    }
+
+    protocol.mux_send_session_new(bc_client.mux, session_id, atyp, addr_bytes, port)
+
+    if atyp != .DOMAIN {
+        delete(addr_bytes)
+    }
+
+    // Wait for response (with timeout)
+    start := time.now()
+    timeout := 30 * time.Second
+
+    for {
+        time.sleep(50 * time.Millisecond)
+
+        sync.mutex_lock(&g_pending_mutex)
+        still_pending := session_id in g_pending
+        sync.mutex_unlock(&g_pending_mutex)
+
+        if !still_pending {
+            return
+        }
+
+        if time.diff(start, time.now()) > timeout {
+            sync.mutex_lock(&g_pending_mutex)
+            if p, exists := g_pending[session_id]; exists {
+                delete(p.target_host)
+                free(p)
+                delete_key(&g_pending, session_id)
+            }
+            sync.mutex_unlock(&g_pending_mutex)
+
+            send_socks_reply(socket, REP_GENERAL_FAILURE)
+            net.close(socket)
+            return
+        }
+
+        if !bc_client.mux.is_running {
+            sync.mutex_lock(&g_pending_mutex)
+            if p, exists := g_pending[session_id]; exists {
+                delete(p.target_host)
+                free(p)
+                delete_key(&g_pending, session_id)
+            }
+            sync.mutex_unlock(&g_pending_mutex)
+
+            send_socks_reply(socket, REP_GENERAL_FAILURE)
+            net.close(socket)
+            return
+        }
+    }
 }
 
 // ============================================================================
@@ -193,8 +445,6 @@ handle_bc_client_thread :: proc(socket: net.TCP_Socket) {
 
     if g_config.verbose {
         log.infof("BC client %d authenticated", client.id)
-    } else {
-        fmt.printf("Backconnect client connected (id=%d)\n", client.id)
     }
 
     // Register client
@@ -211,16 +461,39 @@ handle_bc_client_thread :: proc(socket: net.TCP_Socket) {
 
     protocol.mux_start(client.mux)
 
+    // Start per-client SOCKS5 listener
+    if !start_client_socks_listener(client) {
+        log.errorf("Failed to start SOCKS5 listener for client %d", client.id)
+        protocol.mux_stop(client.mux)
+        sync.mutex_lock(&g_clients_mutex)
+        delete_key(&g_clients, client.id)
+        sync.mutex_unlock(&g_clients_mutex)
+        protocol.mux_destroy(client.mux)
+        protocol.crypto_wipe(&client.crypto_ctx)
+        free(client)
+        return
+    }
+
+    // Send PORT_ASSIGNED message to client
+    port_payload := protocol.build_port_assigned(client.socks_port)
+    defer delete(port_payload)
+    protocol.send_message(client.socket, &client.crypto_ctx, .PORT_ASSIGNED, protocol.SESSION_ID_CONTROL, port_payload)
+
+    fmt.printf("Backconnect client connected (id=%d, port=%d)\n", client.id, client.socks_port)
+
     // Wait for disconnect
     for client.mux.is_running {
         time.sleep(100 * time.Millisecond)
     }
 
+    // Stop per-client SOCKS5 listener
+    stop_client_socks_listener(client)
+
     // Cleanup
     if g_config.verbose {
         log.infof("BC client %d disconnected", client.id)
     } else {
-        fmt.printf("Backconnect client disconnected (id=%d)\n", client.id)
+        fmt.printf("Backconnect client disconnected (id=%d, port=%d)\n", client.id, client.socks_port)
     }
 
     sync.mutex_lock(&g_clients_mutex)
