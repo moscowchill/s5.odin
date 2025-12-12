@@ -794,27 +794,25 @@ bc_handshake :: proc(socket: net.TCP_Socket, crypto_ctx: ^protocol.Crypto_Contex
     // Read HANDSHAKE_ACK (this one is encrypted!)
     ack_data, ack_read_ok := protocol.frame_read_encrypted(socket, crypto_ctx)
     if !ack_read_ok {
-        if g_config.verbose {
-            log.error("Failed to read HANDSHAKE_ACK")
-        }
+        // This usually means wrong OTP/PSK - keys don't match so decryption fails
+        fmt.eprintln("Authentication failed - wrong OTP or PSK")
+        g_config.bc_auto_reconnect = false  // Don't retry with same bad credentials
         return false
     }
     defer delete(ack_data)
 
     ack_type, _, _, ack_decode_ok := protocol.frame_decode(ack_data)
     if !ack_decode_ok || ack_type != .HANDSHAKE_ACK {
-        if g_config.verbose {
-            log.error("Invalid HANDSHAKE_ACK message")
-        }
+        fmt.eprintln("Authentication failed - invalid server response")
+        g_config.bc_auto_reconnect = false  // Don't retry with same bad credentials
         return false
     }
 
     ack_payload := protocol.get_payload(ack_data)
     status, status_ok := protocol.parse_handshake_ack(ack_payload)
     if !status_ok || status != .SUCCESS {
-        if g_config.verbose {
-            log.errorf("Handshake failed with status: %v", status)
-        }
+        fmt.eprintln("Authentication failed - server rejected credentials")
+        g_config.bc_auto_reconnect = false  // Don't retry with same bad credentials
         return false
     }
 
