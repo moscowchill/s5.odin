@@ -3,9 +3,14 @@ s5proxy
 s5proxy_linux
 s5proxy_linux_dev
 s5proxy_linux_tiny
+s5proxy_linux_secure
 s5proxy.exe
 s5proxy_dev.exe
 s5proxy_tiny.exe
+backconnect_server_linux
+backconnect_server_linux_dev
+backconnect_server_linux_secure
+backconnect_server.exe
 *.exe
 *.bin
 *.out
@@ -41,4 +46,5 @@ desktop.ini
 s5_proxy
 cmd/server/backconnect_server
 *.exe
-.claude/settings.local.json
+# Claude Code config
+.claude/
