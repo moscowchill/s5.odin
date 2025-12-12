@@ -24,6 +24,7 @@ import "core:mem"
 import "core:sync"
 import "core:crypto"
 import "core:crypto/x25519"
+import "core:math/rand"
 
 import "../../protocol"
 
@@ -238,11 +239,23 @@ otp_refresh_thread :: proc() {
 // Port Allocation
 // ============================================================================
 
-// Allocate a port from the range for a client
+// Allocate a random port from the range for a client
 allocate_port :: proc() -> (port: u16, ok: bool) {
     sync.mutex_lock(&g_ports_mutex)
     defer sync.mutex_unlock(&g_ports_mutex)
 
+    port_range := PORT_RANGE_END - PORT_RANGE_START + 1
+
+    // Try random ports first (up to 50 attempts)
+    for _ in 0..<50 {
+        p := u16(PORT_RANGE_START) + u16(rand.int31_max(i32(port_range)))
+        if !(p in g_allocated_ports) {
+            g_allocated_ports[p] = true
+            return p, true
+        }
+    }
+
+    // Fallback: linear scan if random attempts exhausted (near capacity)
     for p := u16(PORT_RANGE_START); p <= PORT_RANGE_END; p += 1 {
         if !(p in g_allocated_ports) {
             g_allocated_ports[p] = true
