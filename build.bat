@@ -1,8 +1,6 @@
 @echo off
 REM Build script for SOCKS5 Proxy Server (Windows)
 
-setlocal enabledelayedexpansion
-
 echo ===================================
 echo SOCKS5 Proxy Build Script
 echo ===================================
@@ -20,112 +18,62 @@ echo Odin version:
 odin version
 echo.
 
-REM Build Client (s5_proxy)
+REM Build Client
 echo ===================================
-echo Building Client (s5_proxy)
+echo Building Client
 echo ===================================
 echo.
 
-echo [1/4] Building client for Windows (development)...
+echo [1/2] Building client (debug)...
 odin build s5_proxy.odin -file -out:s5proxy_dev.exe
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] Built: s5proxy_dev.exe
+    echo [OK] s5proxy_dev.exe
 ) else (
-    echo [FAIL] Build failed: s5proxy_dev.exe
+    echo [FAIL] s5proxy_dev.exe
     exit /b 1
 )
 
-echo [2/4] Building client for Windows (optimized)...
+echo [2/2] Building client (release)...
 odin build s5_proxy.odin -file -o:speed -no-bounds-check -out:s5proxy.exe
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] Built: s5proxy.exe
+    echo [OK] s5proxy.exe
 ) else (
-    echo [FAIL] Build failed: s5proxy.exe
-    exit /b 1
-)
-
-echo [3/4] Building client for Windows (security-hardened)...
-odin build s5_proxy.odin -file -o:speed -out:s5proxy_secure.exe
-if %ERRORLEVEL% EQU 0 (
-    echo [OK] Built: s5proxy_secure.exe - with bounds checking
-) else (
-    echo [FAIL] Build failed: s5proxy_secure.exe
-    exit /b 1
-)
-
-echo [4/4] Building client for Windows (minimal size)...
-odin build s5_proxy.odin -file -o:size -no-bounds-check -out:s5proxy_tiny.exe
-if %ERRORLEVEL% EQU 0 (
-    echo [OK] Built: s5proxy_tiny.exe
-) else (
-    echo [FAIL] Build failed: s5proxy_tiny.exe
+    echo [FAIL] s5proxy.exe
     exit /b 1
 )
 
 echo.
-REM Build Server (backconnect_server)
+REM Build Server
 echo ===================================
-echo Building Server (backconnect_server)
+echo Building Server
 echo ===================================
 echo.
 
-echo [1/3] Building server for Windows (development)...
+echo [1/2] Building server (debug)...
 odin build cmd/server -out:backconnect_server_dev.exe
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] Built: backconnect_server_dev.exe
+    echo [OK] backconnect_server_dev.exe
 ) else (
-    echo [FAIL] Build failed: backconnect_server_dev.exe
+    echo [FAIL] backconnect_server_dev.exe
     exit /b 1
 )
 
-echo [2/3] Building server for Windows (optimized)...
+echo [2/2] Building server (release)...
 odin build cmd/server -o:speed -no-bounds-check -out:backconnect_server.exe
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] Built: backconnect_server.exe
+    echo [OK] backconnect_server.exe
 ) else (
-    echo [FAIL] Build failed: backconnect_server.exe
-    exit /b 1
-)
-
-echo [3/3] Building server for Windows (security-hardened)...
-odin build cmd/server -o:speed -out:backconnect_server_secure.exe
-if %ERRORLEVEL% EQU 0 (
-    echo [OK] Built: backconnect_server_secure.exe - with bounds checking
-) else (
-    echo [FAIL] Build failed: backconnect_server_secure.exe
+    echo [FAIL] backconnect_server.exe
     exit /b 1
 )
 
 echo.
 echo ===================================
-echo Build Summary
+echo Done
 echo ===================================
 echo.
-echo Client binaries:
-dir /b s5proxy*.exe 2>nul || echo   (none built)
+echo   s5proxy.exe           - Client (release)
+echo   s5proxy_dev.exe       - Client (debug)
+echo   backconnect_server.exe     - Server (release)
+echo   backconnect_server_dev.exe - Server (debug)
 echo.
-echo Server binaries:
-dir /b backconnect_server*.exe 2>nul || echo   (none built)
-echo.
-echo Client build variants:
-echo   s5proxy_dev.exe    - Development (with debug info)
-echo   s5proxy.exe        - Optimized (fastest, no bounds check)
-echo   s5proxy_secure.exe - Security-hardened (with bounds check)
-echo   s5proxy_tiny.exe   - Minimal size
-echo.
-echo Server build variants:
-echo   backconnect_server_dev.exe    - Development (with debug info)
-echo   backconnect_server.exe        - Optimized (fastest, no bounds check)
-echo   backconnect_server_secure.exe - Security-hardened (with bounds check)
-echo.
-echo Recommended for production:
-echo   Client: s5proxy_secure.exe
-echo   Server: backconnect_server_secure.exe
-echo.
-echo For maximum performance:
-echo   Client: s5proxy.exe
-echo   Server: backconnect_server.exe
-echo.
-echo For testing/debugging:
-echo   Client: s5proxy_dev.exe
-echo   Server: backconnect_server_dev.exe
