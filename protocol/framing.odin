@@ -33,6 +33,7 @@ Message_Type :: enum u8 {
     PONG           = 0x05,
     DISCONNECT     = 0x06,
     ERROR          = 0x07,
+    PORT_ASSIGNED  = 0x08,  // Server tells client which SOCKS5 port was assigned
 
     // Data plane (session_id > 0)
     SESSION_NEW    = 0x10,
@@ -418,4 +419,20 @@ parse_ping_pong :: proc(data: []u8) -> (timestamp: u64, ok: bool) {
                 u64(data[6]) << 8 |
                 u64(data[7])
     return timestamp, true
+}
+
+// PORT_ASSIGNED: port (2 BE)
+build_port_assigned :: proc(port: u16, allocator := context.allocator) -> []u8 {
+    data := make([]u8, 2, allocator)
+    data[0] = u8(port >> 8)
+    data[1] = u8(port)
+    return data
+}
+
+parse_port_assigned :: proc(data: []u8) -> (port: u16, ok: bool) {
+    if len(data) != 2 {
+        return 0, false
+    }
+    port = u16(data[0]) << 8 | u16(data[1])
+    return port, true
 }

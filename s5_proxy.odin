@@ -651,6 +651,7 @@ bc_connect_and_run :: proc() -> bool {
     g_bc_mux.on_session_data = bc_on_session_data
     g_bc_mux.on_session_close = bc_on_session_close
     g_bc_mux.on_disconnect = bc_on_disconnect
+    g_bc_mux.on_port_assigned = bc_on_port_assigned
 
     protocol.mux_start(g_bc_mux)
 
@@ -961,6 +962,18 @@ bc_on_disconnect :: proc(mux: ^protocol.Multiplexer) {
         fmt.println("Disconnected from server")
     }
     mux.should_stop = true
+}
+
+// Callback: server assigned us a dedicated SOCKS5 port
+bc_on_port_assigned :: proc(mux: ^protocol.Multiplexer, port: u16) {
+    fmt.printf("\n")
+    fmt.printf("========================================\n")
+    fmt.printf("  SOCKS5 Proxy Port Assigned: %d\n", port)
+    fmt.printf("========================================\n")
+    fmt.printf("\n")
+    fmt.printf("Use this port to route traffic through this client's network:\n")
+    fmt.printf("  curl --socks5 <server>:%d http://example.com\n", port)
+    fmt.printf("\n")
 }
 
 // Cleanup a session

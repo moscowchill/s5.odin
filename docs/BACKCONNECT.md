@@ -182,6 +182,7 @@ After handshake, all messages are encrypted:
 | HANDSHAKE_ACK | 0x03 | S→C | Authentication result |
 | PING | 0x04 | Both | Keepalive request |
 | PONG | 0x05 | Both | Keepalive response |
+| PORT_ASSIGNED | 0x08 | S→C | Server assigns dedicated SOCKS5 port |
 | SESSION_NEW | 0x10 | S→C | New connection request |
 | SESSION_READY | 0x11 | C→S | Connection established |
 | SESSION_DATA | 0x12 | Both | Tunnel data |
@@ -200,19 +201,31 @@ Multiple SOCKS5 connections are multiplexed over a single encrypted tunnel using
 
 ## Multiple Clients
 
-The server supports multiple simultaneous backconnect clients. SOCKS5 requests are distributed round-robin across connected clients.
+The server supports multiple simultaneous backconnect clients. **Each client gets a dedicated SOCKS5 port** (range 6000-8000), allowing you to target specific client networks.
 
 ```bash
 # Server accepts multiple clients
 ./backconnect_server -bc-psk <shared-psk> -v
 
-# Multiple clients can connect with the same PSK
-# Client 1:
+# Client 1 connects and gets port 6000
 ./s5proxy -backconnect -bc-server server:8443 -bc-psk <shared-psk>
+# Output: SOCKS5 Proxy Port Assigned: 6000
 
-# Client 2:
+# Client 2 connects and gets port 6001
 ./s5proxy -backconnect -bc-server server:8443 -bc-psk <shared-psk>
+# Output: SOCKS5 Proxy Port Assigned: 6001
+
+# Route through specific client networks:
+curl --socks5 server:6000 http://target  # Through Client 1's network
+curl --socks5 server:6001 http://target  # Through Client 2's network
 ```
+
+### Port Assignment
+
+- Port range: **6000-8000** (2000 concurrent clients max)
+- Ports are allocated sequentially from the lowest available
+- When a client disconnects, its port is freed for reuse
+- The shared SOCKS5 listener on port 1080 uses round-robin (for backwards compatibility)
 
 ## Troubleshooting
 

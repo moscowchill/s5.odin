@@ -80,6 +80,7 @@ Multiplexer :: struct {
     on_pong:          proc(mux: ^Multiplexer, timestamp: u64),
     on_disconnect:    proc(mux: ^Multiplexer),
     on_error:         proc(mux: ^Multiplexer, msg: string),
+    on_port_assigned: proc(mux: ^Multiplexer, port: u16),
 
     // User data pointer for callbacks
     user_data:      rawptr,
@@ -436,6 +437,14 @@ mux_reader_proc :: proc(mux: ^Multiplexer) {
         case .ERROR:
             if mux.on_error != nil {
                 mux.on_error(mux, string(payload))
+            }
+
+        case .PORT_ASSIGNED:
+            if mux.on_port_assigned != nil {
+                port, parse_ok := parse_port_assigned(payload)
+                if parse_ok {
+                    mux.on_port_assigned(mux, port)
+                }
             }
 
         case .HANDSHAKE_INIT, .HANDSHAKE_RESP, .HANDSHAKE_ACK:

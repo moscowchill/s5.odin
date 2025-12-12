@@ -11,6 +11,7 @@ Production-ready SOCKS5 proxy written in Odin. Hardened for real traffic with ze
 - Handles partial TCP reads (slow clients/congestion)
 - Configurable buffer sizes (default 16KB)
 - OS-bound connection limits (no artificial restrictions)
+- **Backconnect mode**: Reverse proxy tunneling for clients behind NAT/firewall
 
 ## Build
 
@@ -95,6 +96,74 @@ sqlmap --proxy=socks5://pivot:pass@proxy:1080 ...
 **Auth failures:** Match credentials on client/server, enable `-v` to debug
 
 **FD exhaustion:** Increase ulimit: `ulimit -n 100000` or edit `/etc/security/limits.conf`
+
+## Backconnect Mode
+
+Run a SOCKS5 proxy on machines behind NAT/firewall without opening inbound ports. The client connects **out** to your server, then you can tunnel traffic through the client's network.
+
+### Architecture
+
+```
+┌─────────────────┐      ┌─────────────────────┐      ┌──────────────────┐
+│   SOCKS5 User   │─────▶│  Backconnect Server │◀─────│ Backconnect Client│
+│  (curl, browser)│      │   (Your VPS)        │      │  (Target network) │
+└─────────────────┘      └─────────────────────┘      └──────────────────┘
+     Connect to              :8443 BC listener           Connects OUT to
+     :6000-8000              :6000-8000 per-client       server:8443
+```
+
+**Key feature**: Each client gets a dedicated SOCKS5 port (6000-8000 range), so you can target specific client networks.
+
+### Quick Start
+
+```bash
+# 1. Generate a PSK
+openssl rand -hex 32
+
+# 2. Start the server (on your VPS)
+./backconnect_server -bc-psk <your-64-char-hex-psk>
+
+# 3. Start a client (on target network)
+./s5proxy -backconnect -bc-server your-server.com:8443 -bc-psk <same-psk>
+
+# Client will display:
+# ========================================
+#   SOCKS5 Proxy Port Assigned: 6000
+# ========================================
+
+# 4. Route traffic through that specific client
+curl --socks5 your-server.com:6000 http://internal-site.local
+```
+
+### Multiple Clients
+
+Each client gets its own dedicated port:
+
+```
+Client A (Office network)    → Port 6000
+Client B (Home network)      → Port 6001
+Client C (Cloud instance)    → Port 6002
+```
+
+Target a specific network by connecting to its port:
+```bash
+# Access Office network resources
+curl --socks5 server:6000 http://office-intranet/
+
+# Access Home network resources
+curl --socks5 server:6001 http://192.168.1.1/
+
+# Access Cloud network resources
+curl --socks5 server:6002 http://10.0.0.5/
+```
+
+### Security
+
+- **Encryption**: X25519 key exchange + ChaCha20-Poly1305
+- **Authentication**: Pre-shared key (PSK)
+- **Key pinning**: Optional server public key verification
+
+See [BACKCONNECT.md](BACKCONNECT.md) for full protocol details.
 
 ## References
 
