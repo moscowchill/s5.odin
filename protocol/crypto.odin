@@ -22,6 +22,7 @@ NONCE_SIZE         :: 24  // XChaCha20 nonce for handshake
 KEY_SIZE           :: 32
 TAG_SIZE           :: 16
 COUNTER_SIZE       :: 8   // 8-byte counter, padded to 12 for ChaCha20-Poly1305
+OTP_WINDOW_SECS    :: 4 * 60 * 60  // 4 hours in seconds
 
 // Crypto context for an encrypted session
 Crypto_Context :: struct {
@@ -396,4 +397,62 @@ bytes_to_hex :: proc(data: []u8, allocator := context.allocator) -> string {
     }
 
     return string(result)
+}
+
+// Generate OTP from PSK for a given time window
+// OTP = HMAC-SHA256(PSK, window_counter)
+// Returns a 32-byte OTP that can be used in place of PSK
+generate_otp :: proc(psk: [PSK_SIZE]u8, window: i64) -> [PSK_SIZE]u8 {
+    otp: [PSK_SIZE]u8
+
+    // Build input: 8-byte little-endian window counter
+    input: [8]u8
+    input[0] = u8(window)
+    input[1] = u8(window >> 8)
+    input[2] = u8(window >> 16)
+    input[3] = u8(window >> 24)
+    input[4] = u8(window >> 32)
+    input[5] = u8(window >> 40)
+    input[6] = u8(window >> 48)
+    input[7] = u8(window >> 56)
+
+    // HMAC-SHA256(PSK, window)
+    // Using SHA256(PSK || window || PSK) as a simple HMAC approximation
+    // Copy psk to local var since value params aren't addressable
+    psk_local := psk
+    hmac_input: [PSK_SIZE + 8 + PSK_SIZE]u8
+    mem.copy(&hmac_input[0], &psk_local[0], PSK_SIZE)
+    mem.copy(&hmac_input[PSK_SIZE], &input[0], 8)
+    mem.copy(&hmac_input[PSK_SIZE + 8], &psk_local[0], PSK_SIZE)
+
+    hash.hash_bytes_to_buffer(.SHA256, hmac_input[:], otp[:])
+
+    return otp
+}
+
+// Get current OTP window number
+get_current_otp_window :: proc(unix_time: i64) -> i64 {
+    return unix_time / OTP_WINDOW_SECS
+}
+
+// Generate current OTP from PSK
+generate_current_otp :: proc(psk: [PSK_SIZE]u8, unix_time: i64) -> [PSK_SIZE]u8 {
+    window := get_current_otp_window(unix_time)
+    return generate_otp(psk, window)
+}
+
+// Generate list of valid OTPs (current window ± 1 for clock drift tolerance)
+generate_valid_otps :: proc(psk: [PSK_SIZE]u8, unix_time: i64, allocator := context.allocator) -> [dynamic][PSK_SIZE]u8 {
+    window := get_current_otp_window(unix_time)
+
+    otps := make([dynamic][PSK_SIZE]u8, allocator)
+    append(&otps, generate_otp(psk, window))      // Current window
+    append(&otps, generate_otp(psk, window - 1))  // Previous window (for clock drift)
+
+    return otps
+}
+
+// Calculate seconds until OTP rotates
+otp_seconds_remaining :: proc(unix_time: i64) -> i64 {
+    return OTP_WINDOW_SECS - (unix_time % OTP_WINDOW_SECS)
 }

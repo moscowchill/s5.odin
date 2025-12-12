@@ -1072,6 +1072,15 @@ parse_args :: proc() {
                     os.exit(1)
                 }
             }
+        case "-bc-otp":
+            // OTP is used exactly like PSK - it's just a time-derived secret
+            if i + 1 < len(args) {
+                i += 1
+                if !protocol.hex_to_bytes(args[i], g_config.bc_psk[:]) {
+                    fmt.eprintln("Error: Invalid OTP (must be 64 hex characters)")
+                    os.exit(1)
+                }
+            }
         case "-bc-pubkey":
             if i + 1 < len(args) {
                 i += 1
@@ -1127,7 +1136,8 @@ print_help :: proc() {
     fmt.println("Backconnect Mode Options:")
     fmt.println("  -backconnect        Enable backconnect client mode")
     fmt.println("  -bc-server <addr>   Backconnect server address (host:port)")
-    fmt.println("  -bc-psk <hex>       Pre-shared key (64 hex characters)")
+    fmt.println("  -bc-otp <hex>       One-time password from server (64 hex chars)")
+    fmt.println("  -bc-psk <hex>       Pre-shared key - use only with -no-otp server")
     fmt.println("  -bc-pubkey <hex>    Server public key for pinning (optional)")
     fmt.println("  -no-reconnect       Disable automatic reconnection")
     fmt.println()
@@ -1139,6 +1149,9 @@ print_help :: proc() {
     fmt.println("  # Run as local SOCKS5 proxy")
     fmt.println("  s5_proxy -addr 0.0.0.0:1080")
     fmt.println()
-    fmt.println("  # Run as backconnect client")
+    fmt.println("  # Run as backconnect client with OTP (recommended)")
+    fmt.println("  s5_proxy -backconnect -bc-server 1.2.3.4:8443 -bc-otp <otp-from-server>")
+    fmt.println()
+    fmt.println("  # Run as backconnect client with raw PSK (server must use -no-otp)")
     fmt.println("  s5_proxy -backconnect -bc-server 1.2.3.4:8443 -bc-psk <64-hex>")
 }

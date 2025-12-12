@@ -53,6 +53,9 @@ Server_Config :: struct {
     server_privkey:   [protocol.PRIVKEY_SIZE]u8,
     server_pubkey:    [protocol.PUBKEY_SIZE]u8,
     allowed_psks:     [dynamic][protocol.PSK_SIZE]u8,
+    master_psk:       [protocol.PSK_SIZE]u8,  // Master PSK for OTP generation
+    otp_enabled:      bool,                    // Whether OTP mode is active
+    current_otp_window: i64,                   // Current OTP window for refresh detection
 
     // General
     verbose:          bool,
@@ -151,10 +154,20 @@ main :: proc() {
         delete(pubkey_hex)
     }
 
+    // Display OTP if enabled
+    if g_config.otp_enabled {
+        display_current_otp()
+    }
+
     g_clients = make(map[u32]^BC_Client)
     g_pending = make(map[u32]^Pending_Request)
     g_active = make(map[u32]^Active_Session)
     g_allocated_ports = make(map[u16]bool)
+
+    // Start OTP refresh thread if OTP mode is enabled
+    if g_config.otp_enabled {
+        thread.create_and_start(otp_refresh_thread)
+    }
 
     // Start shared SOCKS5 listener (round-robin across all clients)
     socks_thread := thread.create_and_start(run_socks_listener)
@@ -164,6 +177,63 @@ main :: proc() {
 
     thread.join(socks_thread)
     thread.destroy(socks_thread)
+}
+
+// Display current OTP
+display_current_otp :: proc() {
+    unix_time := time.time_to_unix(time.now())
+    otp := protocol.generate_current_otp(g_config.master_psk, unix_time)
+    otp_hex := protocol.bytes_to_hex(otp[:])
+    defer delete(otp_hex)
+
+    remaining := protocol.otp_seconds_remaining(unix_time)
+    hours := remaining / 3600
+    mins := (remaining % 3600) / 60
+
+    fmt.printf("\n")
+    fmt.printf("========================================\n")
+    fmt.printf("  OTP (valid for %dh %dm):\n", hours, mins)
+    fmt.printf("  %s\n", otp_hex)
+    fmt.printf("========================================\n")
+    fmt.printf("\n")
+
+    // Update current window
+    g_config.current_otp_window = protocol.get_current_otp_window(unix_time)
+
+    // Update allowed_psks with current valid OTPs
+    refresh_otp_psks()
+}
+
+// Refresh the OTP-derived PSKs in allowed_psks
+refresh_otp_psks :: proc() {
+    unix_time := time.time_to_unix(time.now())
+    valid_otps := protocol.generate_valid_otps(g_config.master_psk, unix_time)
+    defer delete(valid_otps)
+
+    // Clear existing and add new OTPs
+    // Note: In OTP mode, allowed_psks only contains OTP-derived keys
+    clear(&g_config.allowed_psks)
+    for otp in valid_otps {
+        append(&g_config.allowed_psks, otp)
+    }
+}
+
+// Thread to refresh OTP display when window changes
+otp_refresh_thread :: proc() {
+    context.logger = log.create_console_logger()
+
+    for {
+        time.sleep(60 * time.Second)  // Check every minute
+
+        unix_time := time.time_to_unix(time.now())
+        current_window := protocol.get_current_otp_window(unix_time)
+
+        if current_window != g_config.current_otp_window {
+            // Window changed, display new OTP
+            fmt.printf("\n[OTP ROTATED]\n")
+            display_current_otp()
+        }
+    }
 }
 
 // ============================================================================
@@ -1210,6 +1280,7 @@ parse_args :: proc() {
     g_config.socks_user = "admin"
     g_config.socks_pass = "password"
     g_config.verbose = false
+    g_config.otp_enabled = false
     g_config.allowed_psks = make([dynamic][protocol.PSK_SIZE]u8)
 
     // Generate server keypair
@@ -1217,6 +1288,7 @@ parse_args :: proc() {
     x25519.scalarmult_basepoint(g_config.server_pubkey[:], g_config.server_privkey[:])
 
     args := os.args[1:]
+    psk_provided := false
 
     for i := 0; i < len(args); i += 1 {
         arg := args[i]
@@ -1252,8 +1324,14 @@ parse_args :: proc() {
                     fmt.eprintln("Error: Invalid PSK (must be 64 hex characters)")
                     os.exit(1)
                 }
-                append(&g_config.allowed_psks, psk)
+                // Store as master PSK for OTP generation
+                g_config.master_psk = psk
+                g_config.otp_enabled = true
+                psk_provided = true
             }
+        case "-no-otp":
+            // Disable OTP mode, use raw PSK directly
+            g_config.otp_enabled = false
         case "-v", "-verbose":
             g_config.verbose = true
         case "-print-pubkey":
@@ -1268,10 +1346,16 @@ parse_args :: proc() {
     }
 
     // Validate
-    if len(g_config.allowed_psks) == 0 {
-        fmt.eprintln("Error: At least one -bc-psk is required")
+    if !psk_provided {
+        fmt.eprintln("Error: -bc-psk is required")
         os.exit(1)
     }
+
+    // If OTP disabled, add raw PSK to allowed list
+    if !g_config.otp_enabled {
+        append(&g_config.allowed_psks, g_config.master_psk)
+    }
+    // If OTP enabled, allowed_psks will be populated by display_current_otp()
 }
 
 print_help :: proc() {
@@ -1288,13 +1372,19 @@ print_help :: proc() {
     fmt.println()
     fmt.println("Backconnect Backend:")
     fmt.println("  -bc-addr <addr>     Listen address (default: 0.0.0.0:8443)")
-    fmt.println("  -bc-psk <hex>       Allowed client PSK (can specify multiple)")
+    fmt.println("  -bc-psk <hex>       Master PSK (64 hex chars) - enables OTP mode")
+    fmt.println("  -no-otp             Disable OTP mode, use raw PSK for auth")
     fmt.println()
     fmt.println("General:")
     fmt.println("  -v, -verbose        Enable verbose logging")
     fmt.println("  -print-pubkey       Print server public key and exit")
     fmt.println("  -h, -help           Show this help")
     fmt.println()
+    fmt.println("OTP Mode (default):")
+    fmt.println("  Server displays a time-based OTP (rotates every 4 hours).")
+    fmt.println("  Clients connect using: -bc-otp <displayed-otp>")
+    fmt.println("  The master PSK never needs to be shared with clients.")
+    fmt.println()
     fmt.println("Example:")
-    fmt.println("  backconnect_server -bc-psk 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    fmt.println("  backconnect_server -bc-psk $(openssl rand -hex 32)")
 }
