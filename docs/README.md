@@ -5,7 +5,7 @@ Production-ready SOCKS5 proxy written in Odin. Hardened for real traffic with ze
 ## Features
 
 - RFC 1928 compliant SOCKS5
-- IPv4/IPv6/domain name support
+- IPv4/domain name support (IPv6 in normal mode only)
 - Optional username/password auth (RFC 1929)
 - Zero memory leaks
 - Handles partial TCP reads (slow clients/congestion)
