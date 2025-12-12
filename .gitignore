@@ -38,3 +38,7 @@ desktop.ini
 # Temporary files
 *.tmp
 *.temp
+s5_proxy
+cmd/server/backconnect_server
+*.exe
+.claude/settings.local.json
