@@ -94,6 +94,24 @@ Relay_Context :: struct {
 g_config: Config
 g_active_connections: [dynamic]^Connection_Context
 
+// Constant-time string comparison to prevent timing attacks
+constant_time_compare :: proc(a: string, b: string) -> bool {
+    if len(a) != len(b) {
+        // Still do a comparison to avoid early-exit timing leak
+        dummy: u8 = 0
+        for i := 0; i < max(len(a), len(b)); i += 1 {
+            dummy |= 0xFF
+        }
+        return false
+    }
+
+    diff: u8 = 0
+    for i := 0; i < len(a); i += 1 {
+        diff |= a[i] ~ b[i]  // XOR and accumulate differences
+    }
+    return diff == 0
+}
+
 // Helper: Receive exactly N bytes (handles partial reads)
 recv_exactly :: proc(socket: net.TCP_Socket, buf: []byte) -> (ok: bool) {
     total := 0
@@ -321,11 +339,12 @@ socks5_authenticate :: proc(socket: net.TCP_Socket) -> bool {
     }
     password := string(buf[ulen+1:ulen+1+plen])
 
-    // Verify credentials
-    auth_ok := username == g_config.username && password == g_config.password
+    // Verify credentials using constant-time comparison to prevent timing attacks
+    auth_ok := constant_time_compare(username, g_config.username) &&
+               constant_time_compare(password, g_config.password)
 
     if g_config.verbose {
-        log.infof("Authentication result: %v", auth_ok)
+        log.infof("SOCKS5 authentication: %s", auth_ok ? "success" : "failure")
     }
 
     // Send auth response

@@ -112,6 +112,24 @@ g_round_robin_idx: u32 = 0
 // Port allocation for per-client SOCKS5 listeners
 PORT_RANGE_START :: 6000
 PORT_RANGE_END   :: 8000
+
+// Constant-time string comparison to prevent timing attacks
+constant_time_compare :: proc(a: string, b: string) -> bool {
+    if len(a) != len(b) {
+        // Still do a comparison to avoid early-exit timing leak
+        dummy: u8 = 0
+        for i := 0; i < max(len(a), len(b)); i += 1 {
+            dummy |= 0xFF
+        }
+        return false
+    }
+
+    diff: u8 = 0
+    for i := 0; i < len(a); i += 1 {
+        diff |= a[i] ~ b[i]  // XOR and accumulate differences
+    }
+    return diff == 0
+}
 g_allocated_ports: map[u16]bool  // port -> in_use
 g_ports_mutex: sync.Mutex
 
@@ -1111,11 +1129,13 @@ socks_authenticate :: proc(socket: net.TCP_Socket) -> bool {
     password := strings.clone_from_bytes(buf[:plen])
     defer delete(password)
 
-    fmt.printf("[SOCKS AUTH] Received: user='%s' (%d), pass='%s' (%d)\n", username, len(username), password, len(password))
-    fmt.printf("[SOCKS AUTH] Expected: user='%s' (%d), pass='%s' (%d)\n", g_config.socks_user, len(g_config.socks_user), g_config.socks_pass, len(g_config.socks_pass))
+    // Use constant-time comparison to prevent timing attacks
+    auth_ok := constant_time_compare(username, g_config.socks_user) &&
+               constant_time_compare(password, g_config.socks_pass)
 
-    auth_ok := username == g_config.socks_user && password == g_config.socks_pass
-    fmt.printf("[SOCKS AUTH] Result: %v\n", auth_ok)
+    if g_config.verbose {
+        log.infof("SOCKS5 authentication attempt: %s", auth_ok ? "success" : "failure")
+    }
 
     response: [2]byte = {0x01, auth_ok ? 0x00 : 0x01}
     net.send_tcp(socket, response[:])
