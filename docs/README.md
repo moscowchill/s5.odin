@@ -113,10 +113,11 @@ Run a SOCKS5 proxy on machines behind NAT/firewall without opening inbound ports
 │  (curl, browser)│      │   (Your VPS)        │      │  (Target network) │
 └─────────────────┘      └─────────────────────┘      └──────────────────┘
      Connect to              :8443 BC listener           Connects OUT to
-     :6000-8000              :6000-8000 per-client       server:8443
+     :6000 (Client A)        :6000-8000 per-client       server:8443
+     :6001 (Client B)
 ```
 
-**Key feature**: Each client gets a dedicated SOCKS5 port (6000-8000 range), so you can target specific client networks.
+Each client gets a **dedicated SOCKS5 port** (6000-8000), so you can target specific client networks.
 
 ### Quick Start
 

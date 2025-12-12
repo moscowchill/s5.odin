@@ -7,10 +7,10 @@ A reverse-tunnel SOCKS5 proxy where the client connects OUT to a server, then re
 ```
 ┌─────────────────┐      ┌─────────────────────┐      ┌──────────────────┐
 │   SOCKS5 User   │─────▶│  Backconnect Server │◀─────│ Backconnect Client│
-│  (curl, browser)│      │   (SOCKS5 frontend) │      │  (behind NAT/FW) │
+│  (curl, browser)│      │                     │      │  (behind NAT/FW) │
 └─────────────────┘      └─────────────────────┘      └──────────────────┘
-                              :1080 SOCKS5              connects to :8443
-                              :8443 BC listener         executes requests
+     :6000 (Client A)         :8443 BC listener         connects to :8443
+     :6001 (Client B)         :6000-8000 per-client     executes requests
 ```
 
 **Use case:** Run a SOCKS5 proxy on a machine behind NAT/firewall without opening inbound ports.
@@ -35,12 +35,10 @@ openssl rand -hex 32
 # Server public key: <64-hex-chars>
 #
 # ========================================
-#   OTP (valid for 3h 59m):
-#   abc123def456789...  <-- copy this for clients
+#   OTP (valid for 3h 59m): a1b2c3d4
 # ========================================
 #
 # Backconnect listener on 0.0.0.0:8443
-# SOCKS5 listener on 127.0.0.1:1080
 ```
 
 ### 3. Start the Client
@@ -73,24 +71,25 @@ odin build . -out:backconnect_server
 ## Server Options
 
 ```
-backconnect_server [options]
+backconnect_server -bc-psk <hex> [options]
 
-SOCKS5 Frontend:
-  -socks-addr <addr>   Listen address for SOCKS5 clients (default: 127.0.0.1:1080)
-  -socks-auth          Require SOCKS5 username/password authentication
-  -socks-user <user>   SOCKS5 username (default: admin)
-  -socks-pass <pass>   SOCKS5 password (default: password)
-
-Backconnect Backend:
-  -bc-addr <addr>      Listen address for backconnect clients (default: 0.0.0.0:8443)
+Backconnect:
+  -bc-addr <addr>      Listen address for clients (default: 0.0.0.0:8443)
   -bc-psk <hex>        Master PSK, 64 hex chars (enables OTP mode)
   -no-otp              Disable OTP mode, use raw PSK for authentication
+
+SOCKS5 Auth (for per-client ports):
+  -socks-auth          Require authentication on SOCKS5 ports
+  -socks-user <user>   Username (default: admin)
+  -socks-pass <pass>   Password (default: password)
 
 General:
   -v, -verbose         Enable verbose logging
   -print-pubkey        Print server public key and exit
   -h, -help            Show help
 ```
+
+Each connected client gets a dedicated SOCKS5 port (6000-8000 range).
 
 ## OTP Authentication
 
@@ -253,7 +252,7 @@ curl --socks5 server:6001 http://target  # Through Client 2's network
 - Port range: **6000-8000** (2000 concurrent clients max)
 - Ports are allocated sequentially from the lowest available
 - When a client disconnects, its port is freed for reuse
-- The shared SOCKS5 listener on port 1080 uses round-robin (for backwards compatibility)
+- Each client gets a dedicated SOCKS5 port for targeted routing
 
 ## Troubleshooting
 

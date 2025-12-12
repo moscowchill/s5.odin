@@ -42,8 +42,7 @@ REP_COMMAND_NOT_SUPPORTED :: 0x07
 
 // Server configuration
 Server_Config :: struct {
-    // SOCKS5 frontend
-    socks_addr:       string,
+    // SOCKS5 authentication (for per-client dedicated ports)
     socks_auth:       bool,
     socks_user:       string,
     socks_pass:       string,
@@ -110,7 +109,6 @@ g_pending: map[u32]^Pending_Request  // session_id -> pending request
 g_pending_mutex: sync.Mutex
 g_active: map[u32]^Active_Session    // session_id -> active session
 g_active_mutex: sync.Mutex
-g_round_robin_idx: u32 = 0
 
 // Port allocation for per-client SOCKS5 listeners
 PORT_RANGE_START :: 6000
@@ -142,9 +140,8 @@ main :: proc() {
     parse_args()
 
     if g_config.verbose {
-        log.info("Starting Backconnect SOCKS5 Server")
-        log.infof("SOCKS5 frontend: %s", g_config.socks_addr)
-        log.infof("Backconnect backend: %s", g_config.bc_addr)
+        log.info("Starting Backconnect Server")
+        log.infof("Backconnect listener: %s", g_config.bc_addr)
         pubkey_hex := protocol.bytes_to_hex(g_config.server_pubkey[:])
         log.infof("Server public key: %s", pubkey_hex)
         delete(pubkey_hex)
@@ -169,14 +166,9 @@ main :: proc() {
         thread.create_and_start(otp_refresh_thread)
     }
 
-    // Start shared SOCKS5 listener (round-robin across all clients)
-    socks_thread := thread.create_and_start(run_socks_listener)
-
     // Start backconnect listener (runs in main thread)
+    // Each client gets a dedicated SOCKS5 port when they connect
     run_bc_listener()
-
-    thread.join(socks_thread)
-    thread.destroy(socks_thread)
 }
 
 // Display current OTP (short 8-char version)
@@ -913,212 +905,8 @@ bc_on_disconnect :: proc(mux: ^protocol.Multiplexer) {
 }
 
 // ============================================================================
-// SOCKS5 Listener
+// SOCKS5 Protocol (for dedicated per-client listeners)
 // ============================================================================
-
-run_socks_listener :: proc() {
-    context.logger = log.create_console_logger()
-    endpoint, parse_ok := net.parse_endpoint(g_config.socks_addr)
-    if !parse_ok {
-        log.errorf("Failed to parse SOCKS5 address: %s", g_config.socks_addr)
-        os.exit(1)
-    }
-
-    listen_socket, listen_err := net.listen_tcp(endpoint)
-    if listen_err != nil {
-        log.errorf("Failed to bind SOCKS5 listener: %v", listen_err)
-        os.exit(1)
-    }
-    defer net.close(listen_socket)
-
-    if !g_config.verbose {
-        fmt.printf("SOCKS5 listener on %s\n", g_config.socks_addr)
-    }
-
-    for {
-        client_socket, _, accept_err := net.accept_tcp(listen_socket)
-        if accept_err != nil {
-            continue
-        }
-
-        thread.create_and_start_with_poly_data(client_socket, handle_socks_client_thread)
-    }
-}
-
-handle_socks_client_thread :: proc(socket: net.TCP_Socket) {
-    context.logger = log.create_console_logger()
-    // NOTE: Do NOT defer close the socket here!
-    // If the session succeeds, the relay thread takes ownership.
-    // If the session fails, we close it explicitly.
-
-    // SOCKS5 handshake
-    if !socks_handshake(socket) {
-        net.close(socket)
-        return
-    }
-
-    // Parse request
-    host, port, cmd, ok := parse_socks_request(socket)
-    if !ok {
-        send_socks_reply(socket, REP_GENERAL_FAILURE)
-        net.close(socket)
-        return
-    }
-    defer delete(host)
-
-    if cmd != CMD_CONNECT {
-        send_socks_reply(socket, REP_COMMAND_NOT_SUPPORTED)
-        net.close(socket)
-        return
-    }
-
-    if g_config.verbose {
-        log.infof("SOCKS5 request: %s:%d", host, port)
-    }
-
-    // Select a backconnect client
-    bc_client := select_bc_client()
-    if bc_client == nil {
-        if g_config.verbose {
-            log.warn("No backconnect clients available")
-        }
-        send_socks_reply(socket, REP_GENERAL_FAILURE)
-        net.close(socket)
-        return
-    }
-
-    // Create session on the backconnect client
-    session_id := protocol.mux_session_create(bc_client.mux, host, port)
-
-    if g_config.verbose {
-        log.infof("Routing %s:%d through BC client %d (session %d)", host, port, bc_client.id, session_id)
-    }
-
-    // Create pending request
-    pending := new(Pending_Request)
-    pending.socks_socket = socket
-    pending.session_id = session_id
-    pending.bc_client_id = bc_client.id
-    pending.target_host = strings.clone(host)
-    pending.target_port = port
-    pending.created_at = time.now()
-
-    sync.mutex_lock(&g_pending_mutex)
-    g_pending[session_id] = pending
-    sync.mutex_unlock(&g_pending_mutex)
-
-    // Send SESSION_NEW to backconnect client
-    // Determine address type
-    atyp: protocol.Address_Type
-    addr_bytes: []u8
-
-    // Try to determine if it's an IPv4 or domain (no IPv6 support)
-    if ep, ep_ok := net.parse_endpoint(fmt.tprintf("%s:0", host)); ep_ok {
-        #partial switch v in ep.address {
-        case net.IP4_Address:
-            atyp = .IPV4
-            addr_bytes = make([]u8, 4)
-            addr_bytes[0] = v[0]
-            addr_bytes[1] = v[1]
-            addr_bytes[2] = v[2]
-            addr_bytes[3] = v[3]
-        case:
-            atyp = .DOMAIN
-            addr_bytes = transmute([]u8)host
-        }
-    } else {
-        atyp = .DOMAIN
-        addr_bytes = transmute([]u8)host
-    }
-
-    protocol.mux_send_session_new(bc_client.mux, session_id, atyp, addr_bytes, port)
-
-    if atyp != .DOMAIN {
-        delete(addr_bytes)
-    }
-
-    // Don't close socket here - it will be used by the relay
-    // Wait for SESSION_READY callback to complete the handshake
-
-    // Actually we need to wait here or the socket will be closed when this proc returns
-    // Let's wait for the pending request to be resolved
-
-    // Wait for response (with timeout)
-    start := time.now()
-    timeout := 30 * time.Second
-
-    for {
-        time.sleep(50 * time.Millisecond)
-
-        sync.mutex_lock(&g_pending_mutex)
-        still_pending := session_id in g_pending
-        sync.mutex_unlock(&g_pending_mutex)
-
-        if !still_pending {
-            // Request was handled (either success or failure)
-            // Don't close socket here - relay thread owns it now or it was already closed
-            return
-        }
-
-        if time.diff(start, time.now()) > timeout {
-            // Timeout
-            sync.mutex_lock(&g_pending_mutex)
-            if p, exists := g_pending[session_id]; exists {
-                delete(p.target_host)
-                free(p)
-                delete_key(&g_pending, session_id)
-            }
-            sync.mutex_unlock(&g_pending_mutex)
-
-            send_socks_reply(socket, REP_GENERAL_FAILURE)
-            net.close(socket)
-            return
-        }
-
-        // Check if BC client is still connected
-        sync.mutex_lock(&g_clients_mutex)
-        _, client_exists := g_clients[bc_client.id]
-        sync.mutex_unlock(&g_clients_mutex)
-
-        if !client_exists {
-            sync.mutex_lock(&g_pending_mutex)
-            if p, exists := g_pending[session_id]; exists {
-                delete(p.target_host)
-                free(p)
-                delete_key(&g_pending, session_id)
-            }
-            sync.mutex_unlock(&g_pending_mutex)
-
-            send_socks_reply(socket, REP_GENERAL_FAILURE)
-            net.close(socket)
-            return
-        }
-    }
-}
-
-// Select a backconnect client (round-robin)
-select_bc_client :: proc() -> ^BC_Client {
-    sync.mutex_lock(&g_clients_mutex)
-    defer sync.mutex_unlock(&g_clients_mutex)
-
-    if len(g_clients) == 0 {
-        return nil
-    }
-
-    // Get all client IDs
-    ids: [dynamic]u32
-    defer delete(ids)
-
-    for id in g_clients {
-        append(&ids, id)
-    }
-
-    // Round robin
-    idx := g_round_robin_idx % u32(len(ids))
-    g_round_robin_idx += 1
-
-    return g_clients[ids[idx]]
-}
 
 socks_handshake :: proc(socket: net.TCP_Socket) -> bool {
     buf: [258]byte
@@ -1280,7 +1068,6 @@ send_socks_reply :: proc(socket: net.TCP_Socket, reply_code: byte) {
 
 parse_args :: proc() {
     // Defaults
-    g_config.socks_addr = "127.0.0.1:1080"
     g_config.bc_addr = "0.0.0.0:8443"
     g_config.socks_auth = false
     g_config.socks_user = "admin"
@@ -1300,11 +1087,6 @@ parse_args :: proc() {
         arg := args[i]
 
         switch arg {
-        case "-socks-addr":
-            if i + 1 < len(args) {
-                i += 1
-                g_config.socks_addr = args[i]
-            }
         case "-socks-auth":
             g_config.socks_auth = true
         case "-socks-user":
@@ -1365,21 +1147,22 @@ parse_args :: proc() {
 }
 
 print_help :: proc() {
-    fmt.println("Backconnect SOCKS5 Server")
+    fmt.println("Backconnect Server")
+    fmt.println()
+    fmt.println("Each connected client gets a dedicated SOCKS5 port (6000-8000).")
     fmt.println()
     fmt.println("Usage:")
-    fmt.println("  backconnect_server [options]")
+    fmt.println("  backconnect_server -bc-psk <hex> [options]")
     fmt.println()
-    fmt.println("SOCKS5 Frontend:")
-    fmt.println("  -socks-addr <addr>  Listen address (default: 127.0.0.1:1080)")
-    fmt.println("  -socks-auth         Require authentication")
-    fmt.println("  -socks-user <user>  Username (default: admin)")
-    fmt.println("  -socks-pass <pass>  Password (default: password)")
-    fmt.println()
-    fmt.println("Backconnect Backend:")
+    fmt.println("Backconnect:")
     fmt.println("  -bc-addr <addr>     Listen address (default: 0.0.0.0:8443)")
     fmt.println("  -bc-psk <hex>       Master PSK (64 hex chars) - enables OTP mode")
     fmt.println("  -no-otp             Disable OTP mode, use raw PSK for auth")
+    fmt.println()
+    fmt.println("SOCKS5 Auth (for per-client ports):")
+    fmt.println("  -socks-auth         Require authentication on SOCKS5 ports")
+    fmt.println("  -socks-user <user>  Username (default: admin)")
+    fmt.println("  -socks-pass <pass>  Password (default: password)")
     fmt.println()
     fmt.println("General:")
     fmt.println("  -v, -verbose        Enable verbose logging")
@@ -1387,9 +1170,8 @@ print_help :: proc() {
     fmt.println("  -h, -help           Show this help")
     fmt.println()
     fmt.println("OTP Mode (default):")
-    fmt.println("  Server displays a time-based OTP (rotates every 4 hours).")
-    fmt.println("  Clients connect using: -bc-otp <displayed-otp>")
-    fmt.println("  The master PSK never needs to be shared with clients.")
+    fmt.println("  Server displays 8-char OTP (rotates every 4 hours).")
+    fmt.println("  Clients connect using: -bc-otp <otp>")
     fmt.println()
     fmt.println("Example:")
     fmt.println("  backconnect_server -bc-psk $(openssl rand -hex 32)")
