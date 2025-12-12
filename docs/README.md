@@ -117,14 +117,19 @@ Run a SOCKS5 proxy on machines behind NAT/firewall without opening inbound ports
 ### Quick Start
 
 ```bash
-# 1. Generate a PSK
-openssl rand -hex 32
+# 1. Generate a master PSK (keep this secret on server)
+PSK=$(openssl rand -hex 32)
 
-# 2. Start the server (on your VPS)
-./backconnect_server -bc-psk <your-64-char-hex-psk>
+# 2. Start the server (on your VPS) - displays OTP
+./backconnect_server -bc-psk $PSK
+# Server displays:
+# ========================================
+#   OTP (valid for 3h 59m):
+#   abc123def456...  <- copy this
+# ========================================
 
-# 3. Start a client (on target network)
-./s5proxy -backconnect -bc-server your-server.com:8443 -bc-psk <same-psk>
+# 3. Start a client using the OTP (on target network)
+./s5proxy -backconnect -bc-server your-server.com:8443 -bc-otp <otp-from-server>
 
 # Client will display:
 # ========================================
@@ -134,6 +139,8 @@ openssl rand -hex 32
 # 4. Route traffic through that specific client
 curl --socks5 your-server.com:6000 http://internal-site.local
 ```
+
+**OTP Mode (default):** Server generates time-based OTP that rotates every 4 hours. The master PSK never needs to be shared with clients.
 
 ### Multiple Clients
 
@@ -160,8 +167,9 @@ curl --socks5 server:6002 http://10.0.0.5/
 ### Security
 
 - **Encryption**: X25519 key exchange + ChaCha20-Poly1305
-- **Authentication**: Pre-shared key (PSK)
+- **Authentication**: Time-based OTP derived from master PSK (rotates every 4h)
 - **Key pinning**: Optional server public key verification
+- **Opsec**: Master PSK stays on server, only OTP is shared with clients
 
 See [BACKCONNECT.md](BACKCONNECT.md) for full protocol details.
 

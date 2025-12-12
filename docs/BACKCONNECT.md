@@ -17,10 +17,10 @@ A reverse-tunnel SOCKS5 proxy where the client connects OUT to a server, then re
 
 ## Quick Start
 
-### 1. Generate a PSK (Pre-Shared Key)
+### 1. Generate a Master PSK
 
 ```bash
-# Generate a random 32-byte (64 hex char) PSK
+# Generate a random 32-byte (64 hex char) PSK - keep this secret on server
 openssl rand -hex 32
 # Example output: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
@@ -33,25 +33,30 @@ openssl rand -hex 32
 
 # Output:
 # Server public key: <64-hex-chars>
-# SOCKS5 listener on 127.0.0.1:1080
+#
+# ========================================
+#   OTP (valid for 3h 59m):
+#   abc123def456789...  <-- copy this for clients
+# ========================================
+#
 # Backconnect listener on 0.0.0.0:8443
+# SOCKS5 listener on 127.0.0.1:1080
 ```
 
 ### 3. Start the Client
 
 ```bash
-# On the machine behind NAT (copy the server's public key from step 2)
+# On the machine behind NAT - use the OTP displayed by server
 ./s5proxy -backconnect \
   -bc-server your-server.com:8443 \
-  -bc-psk 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-  -bc-pubkey <server-public-key>
+  -bc-otp <otp-from-server>
 ```
 
 ### 4. Use the Proxy
 
 ```bash
-# Connect through the server's SOCKS5 frontend
-curl --socks5 your-server.com:1080 http://ifconfig.me
+# Connect through the client's dedicated port (displayed on connect)
+curl --socks5 your-server.com:6000 http://ifconfig.me
 ```
 
 ## Building
@@ -78,7 +83,8 @@ SOCKS5 Frontend:
 
 Backconnect Backend:
   -bc-addr <addr>      Listen address for backconnect clients (default: 0.0.0.0:8443)
-  -bc-psk <hex>        Allowed client PSK, 64 hex chars (can specify multiple)
+  -bc-psk <hex>        Master PSK, 64 hex chars (enables OTP mode)
+  -no-otp              Disable OTP mode, use raw PSK for authentication
 
 General:
   -v, -verbose         Enable verbose logging
@@ -86,14 +92,34 @@ General:
   -h, -help            Show help
 ```
 
-### Multiple PSKs
+## OTP Authentication
 
-You can allow multiple clients with different PSKs:
+By default, the server operates in **OTP mode** for improved operational security:
+
+- Server generates a time-based OTP from the master PSK
+- OTP rotates every **4 hours**
+- OTP is displayed on server startup and when it rotates
+- Clients authenticate using `-bc-otp` with the displayed OTP
+- **The master PSK never needs to be shared with clients**
+
+### Why OTP Mode?
+
+| Scenario | Raw PSK Mode | OTP Mode |
+|----------|--------------|----------|
+| Client binary captured | Attacker gets master secret | Attacker gets expired OTP |
+| PSK leaked | All clients compromised | Only current window affected |
+| Key rotation | Must update all clients | Just wait 4 hours |
+
+### Disabling OTP Mode
+
+For backwards compatibility or testing, you can disable OTP mode:
 
 ```bash
-./backconnect_server \
-  -bc-psk 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-  -bc-psk abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567
+# Server: use raw PSK directly
+./backconnect_server -bc-psk <psk> -no-otp
+
+# Client: use -bc-psk instead of -bc-otp
+./s5proxy -backconnect -bc-server server:8443 -bc-psk <same-psk>
 ```
 
 ### SOCKS5 Authentication
@@ -114,7 +140,8 @@ s5proxy -backconnect [options]
 Required:
   -backconnect         Enable backconnect client mode
   -bc-server <addr>    Server address (host:port)
-  -bc-psk <hex>        Pre-shared key (64 hex characters)
+  -bc-otp <hex>        One-time password from server (64 hex chars) - recommended
+  -bc-psk <hex>        Pre-shared key (only for -no-otp servers)
 
 Optional:
   -bc-pubkey <hex>     Server public key for pinning (recommended)
@@ -194,10 +221,11 @@ Multiple SOCKS5 connections are multiplexed over a single encrypted tunnel using
 
 ## Security Considerations
 
-1. **Use strong PSKs:** Generate with `openssl rand -hex 32`
-2. **Pin server keys:** Always use `-bc-pubkey` in production
-3. **Restrict SOCKS5 access:** Bind to localhost or use `-socks-auth`
-4. **Firewall the BC port:** Only allow expected client IPs on port 8443
+1. **Use OTP mode:** Keep master PSK secret on server, share only OTPs with clients
+2. **Use strong PSKs:** Generate with `openssl rand -hex 32`
+3. **Pin server keys:** Always use `-bc-pubkey` in production
+4. **Restrict SOCKS5 access:** Bind to localhost or use `-socks-auth`
+5. **Firewall the BC port:** Only allow expected client IPs on port 8443
 
 ## Multiple Clients
 
