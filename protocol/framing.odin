@@ -253,8 +253,11 @@ get_payload :: proc(msg_data: []u8) -> []u8 {
 // HANDSHAKE_INIT: server_pubkey (32) || nonce (24)
 build_handshake_init :: proc(server_pubkey: [PUBKEY_SIZE]u8, nonce: [NONCE_SIZE]u8, allocator := context.allocator) -> []u8 {
     data := make([]u8, PUBKEY_SIZE + NONCE_SIZE, allocator)
-    copy(data[:PUBKEY_SIZE], server_pubkey[:])
-    copy(data[PUBKEY_SIZE:], nonce[:])
+    // Use local copies since value params aren't addressable for slicing
+    pubkey_local := server_pubkey
+    nonce_local := nonce
+    mem.copy(&data[0], &pubkey_local[0], PUBKEY_SIZE)
+    mem.copy(&data[PUBKEY_SIZE], &nonce_local[0], NONCE_SIZE)
     return data
 }
 
@@ -271,7 +274,9 @@ parse_handshake_init :: proc(data: []u8) -> (server_pubkey: [PUBKEY_SIZE]u8, non
 // HANDSHAKE_RESP: client_pubkey (32) || encrypted_psk (48)
 build_handshake_resp :: proc(client_pubkey: [PUBKEY_SIZE]u8, encrypted_psk: []u8, allocator := context.allocator) -> []u8 {
     data := make([]u8, PUBKEY_SIZE + len(encrypted_psk), allocator)
-    copy(data[:PUBKEY_SIZE], client_pubkey[:])
+    // Use local copy since value param isn't addressable for slicing
+    pubkey_local := client_pubkey
+    mem.copy(&data[0], &pubkey_local[0], PUBKEY_SIZE)
     copy(data[PUBKEY_SIZE:], encrypted_psk)
     return data
 }

@@ -107,9 +107,10 @@ crypto_derive_keys :: proc(ctx: ^Crypto_Context, nonce: [NONCE_SIZE]u8, is_initi
     // Key = SHA256(shared_secret || nonce || direction || psk)
     derive_buf: [SHARED_SECRET_SIZE + NONCE_SIZE + 3 + PSK_SIZE]u8
 
-    // Copy shared secret and nonce
-    copy(derive_buf[:SHARED_SECRET_SIZE], ctx.shared_secret[:])
-    copy(derive_buf[SHARED_SECRET_SIZE:SHARED_SECRET_SIZE + NONCE_SIZE], nonce[:])
+    // Copy shared secret and nonce (use local copy for nonce since value params aren't addressable)
+    nonce_local := nonce
+    mem.copy(&derive_buf[0], &ctx.shared_secret[0], SHARED_SECRET_SIZE)
+    mem.copy(&derive_buf[SHARED_SECRET_SIZE], &nonce_local[0], NONCE_SIZE)
 
     // Derive send key
     if is_initiator {
