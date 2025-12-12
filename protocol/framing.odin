@@ -253,12 +253,8 @@ get_payload :: proc(msg_data: []u8) -> []u8 {
 // HANDSHAKE_INIT: server_pubkey (32) || nonce (24)
 build_handshake_init :: proc(server_pubkey: [PUBKEY_SIZE]u8, nonce: [NONCE_SIZE]u8, allocator := context.allocator) -> []u8 {
     data := make([]u8, PUBKEY_SIZE + NONCE_SIZE, allocator)
-    for i in 0..<PUBKEY_SIZE {
-        data[i] = server_pubkey[i]
-    }
-    for i in 0..<NONCE_SIZE {
-        data[PUBKEY_SIZE + i] = nonce[i]
-    }
+    copy(data[:PUBKEY_SIZE], server_pubkey[:])
+    copy(data[PUBKEY_SIZE:], nonce[:])
     return data
 }
 
@@ -267,21 +263,15 @@ parse_handshake_init :: proc(data: []u8) -> (server_pubkey: [PUBKEY_SIZE]u8, non
     if len(data) != PUBKEY_SIZE + NONCE_SIZE {
         return {}, {}, false
     }
-    for i in 0..<PUBKEY_SIZE {
-        server_pubkey[i] = data[i]
-    }
-    for i in 0..<NONCE_SIZE {
-        nonce[i] = data[PUBKEY_SIZE + i]
-    }
+    copy(server_pubkey[:], data[:PUBKEY_SIZE])
+    copy(nonce[:], data[PUBKEY_SIZE:])
     return server_pubkey, nonce, true
 }
 
 // HANDSHAKE_RESP: client_pubkey (32) || encrypted_psk (48)
 build_handshake_resp :: proc(client_pubkey: [PUBKEY_SIZE]u8, encrypted_psk: []u8, allocator := context.allocator) -> []u8 {
     data := make([]u8, PUBKEY_SIZE + len(encrypted_psk), allocator)
-    for i in 0..<PUBKEY_SIZE {
-        data[i] = client_pubkey[i]
-    }
+    copy(data[:PUBKEY_SIZE], client_pubkey[:])
     copy(data[PUBKEY_SIZE:], encrypted_psk)
     return data
 }
@@ -292,9 +282,7 @@ parse_handshake_resp :: proc(data: []u8) -> (client_pubkey: [PUBKEY_SIZE]u8, enc
     if len(data) != expected_len {
         return {}, nil, false
     }
-    for i in 0..<PUBKEY_SIZE {
-        client_pubkey[i] = data[i]
-    }
+    copy(client_pubkey[:], data[:PUBKEY_SIZE])
     encrypted_psk = data[PUBKEY_SIZE:]
     return client_pubkey, encrypted_psk, true
 }

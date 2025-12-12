@@ -107,14 +107,9 @@ crypto_derive_keys :: proc(ctx: ^Crypto_Context, nonce: [NONCE_SIZE]u8, is_initi
     // Key = SHA256(shared_secret || nonce || direction || psk)
     derive_buf: [SHARED_SECRET_SIZE + NONCE_SIZE + 3 + PSK_SIZE]u8
 
-    // Copy shared secret
-    for i in 0..<SHARED_SECRET_SIZE {
-        derive_buf[i] = ctx.shared_secret[i]
-    }
-    // Copy nonce
-    for i in 0..<NONCE_SIZE {
-        derive_buf[SHARED_SECRET_SIZE + i] = nonce[i]
-    }
+    // Copy shared secret and nonce
+    copy(derive_buf[:SHARED_SECRET_SIZE], ctx.shared_secret[:])
+    copy(derive_buf[SHARED_SECRET_SIZE:SHARED_SECRET_SIZE + NONCE_SIZE], nonce[:])
 
     // Derive send key
     if is_initiator {
@@ -122,9 +117,7 @@ crypto_derive_keys :: proc(ctx: ^Crypto_Context, nonce: [NONCE_SIZE]u8, is_initi
     } else {
         copy(derive_buf[SHARED_SECRET_SIZE + NONCE_SIZE:], "s2c")
     }
-    for i in 0..<PSK_SIZE {
-        derive_buf[SHARED_SECRET_SIZE + NONCE_SIZE + 3 + i] = ctx.psk[i]
-    }
+    copy(derive_buf[SHARED_SECRET_SIZE + NONCE_SIZE + 3:], ctx.psk[:])
 
     send_hash := hash.hash_bytes_to_buffer(.SHA256, derive_buf[:], ctx.send_key[:])
 
