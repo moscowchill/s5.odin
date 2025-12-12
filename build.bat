@@ -47,7 +47,7 @@ if %ERRORLEVEL% EQU 0 (
 echo [3/4] Building client for Windows (security-hardened)...
 odin build s5_proxy.odin -file -o:speed -out:s5proxy_secure.exe
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] Built: s5proxy_secure.exe (with bounds checking)
+    echo [OK] Built: s5proxy_secure.exe - with bounds checking
 ) else (
     echo [FAIL] Build failed: s5proxy_secure.exe
     exit /b 1
@@ -90,7 +90,7 @@ if %ERRORLEVEL% EQU 0 (
 echo [3/3] Building server for Windows (security-hardened)...
 odin build cmd/server -o:speed -out:backconnect_server_secure.exe
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] Built: backconnect_server_secure.exe (with bounds checking)
+    echo [OK] Built: backconnect_server_secure.exe - with bounds checking
 ) else (
     echo [FAIL] Build failed: backconnect_server_secure.exe
     exit /b 1
