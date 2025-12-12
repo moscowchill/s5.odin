@@ -872,21 +872,9 @@ bc_connect_target_thread :: proc(args: ^BC_Conn_Args) {
         return
     }
 
-    // Build target address
+    // Build target address and connect (handles both IPs and domain names)
     target_addr := fmt.tprintf("%s:%d", host, port)
-    endpoint, parse_ok := net.parse_endpoint(target_addr)
-
-    if !parse_ok {
-        if g_config.verbose {
-            log.errorf("Session %d: failed to parse target %s", session_id, target_addr)
-        }
-        protocol.mux_send_session_ready(g_bc_mux, session_id, .HOST_UNREACHABLE)
-        bc_cleanup_session(session_id)
-        return
-    }
-
-    // Connect
-    target_socket, dial_err := net.dial_tcp(endpoint)
+    target_socket, dial_err := net.dial_tcp_from_hostname_and_port_string(target_addr)
     if dial_err != nil {
         if g_config.verbose {
             log.errorf("Session %d: failed to connect to %s: %v", session_id, target_addr, dial_err)
