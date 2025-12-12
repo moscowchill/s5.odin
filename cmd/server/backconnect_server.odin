@@ -731,24 +731,33 @@ relay_socks_to_bc_thread :: proc(args: ^Relay_Args) {
     buffer := make([]u8, 16384)
     defer delete(buffer)
 
-    fmt.printf("[RELAY] socks_to_bc thread started for session %d\n", args.session_id)
+    if g_config.verbose {
+        log.infof("[RELAY] socks_to_bc thread started for session %d", args.session_id)
+    }
 
     for args.bc_client.mux.is_running {
         n, err := net.recv_tcp(args.socks_socket, buffer)
-        fmt.printf("[RELAY] recv from curl: n=%d, err=%v\n", n, err)
         if err != nil || n == 0 {
-            fmt.printf("[RELAY] breaking loop: err=%v, n=%d\n", err, n)
+            if g_config.verbose {
+                log.infof("[RELAY] session %d: recv returned n=%d, err=%v", args.session_id, n, err)
+            }
             break
         }
 
-        fmt.printf("[RELAY] sending %d bytes to bc client via session %d\n", n, args.session_id)
+        if g_config.verbose {
+            log.infof("[RELAY] session %d: forwarding %d bytes", args.session_id, n)
+        }
         if !protocol.mux_session_send(args.bc_client.mux, args.session_id, buffer[:n]) {
-            fmt.printf("[RELAY] mux_session_send failed\n")
+            if g_config.verbose {
+                log.warnf("[RELAY] session %d: mux_session_send failed", args.session_id)
+            }
             break
         }
     }
 
-    fmt.printf("[RELAY] loop exited, closing session %d\n", args.session_id)
+    if g_config.verbose {
+        log.infof("[RELAY] session %d: closing", args.session_id)
+    }
     // Close session
     protocol.mux_session_close(args.bc_client.mux, args.session_id, .NORMAL)
 
