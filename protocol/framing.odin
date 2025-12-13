@@ -429,3 +429,301 @@ parse_port_assigned :: proc(data: []u8) -> (port: u16, ok: bool) {
     port = u16(data[0]) << 8 | u16(data[1])
     return port, true
 }
+
+// ============================================================================
+// Encrypted Handshake Functions
+// ============================================================================
+// These functions encrypt the handshake messages using a key derived from the
+// PSK, hiding the public keys and making the protocol harder to fingerprint.
+//
+// Wire format for HANDSHAKE_INIT (encrypted):
+//   [Length (2 BE)] [Nonce (24)] [Encrypted(type + session_id + pubkey) + Tag (16)]
+//   Total: 2 + 24 + (1 + 4 + 32 + 16) = 79 bytes
+//
+// Wire format for HANDSHAKE_RESP (encrypted):
+//   [Length (2 BE)] [Encrypted(type + session_id + client_pubkey + encrypted_psk) + Tag (16)]
+//   Total: 2 + (1 + 4 + 32 + 48 + 16) = 103 bytes
+
+// Write encrypted HANDSHAKE_INIT
+// Sends: nonce (24) || encrypted(type || session_id || server_pubkey) || tag (16)
+frame_write_handshake_init_encrypted :: proc(socket: net.TCP_Socket, psk: [PSK_SIZE]u8, server_pubkey: [PUBKEY_SIZE]u8) -> (nonce: [NONCE_SIZE]u8, ok: bool) {
+    // Generate random nonce
+    nonce = crypto_generate_nonce()
+
+    // Derive handshake encryption key
+    handshake_key := derive_handshake_key(psk, nonce)
+    defer mem.zero_explicit(&handshake_key, size_of(handshake_key))
+
+    // Build message: type (1) || session_id (4) || server_pubkey (32)
+    msg: [HEADER_SIZE + PUBKEY_SIZE]u8
+    msg[0] = u8(Message_Type.HANDSHAKE_INIT)
+    // session_id = 0 (control plane)
+    msg[1] = 0
+    msg[2] = 0
+    msg[3] = 0
+    msg[4] = 0
+    // Copy pubkey
+    pubkey_local := server_pubkey
+    mem.copy(&msg[HEADER_SIZE], &pubkey_local[0], PUBKEY_SIZE)
+
+    // Encrypt
+    encrypted, enc_ok := encrypt_handshake_message(handshake_key, nonce, msg[:])
+    if !enc_ok {
+        return {}, false
+    }
+    defer delete(encrypted)
+
+    // Build wire message: nonce (24) || encrypted (37 + 16 = 53)
+    wire_len := NONCE_SIZE + len(encrypted)
+    wire_msg := make([]u8, wire_len)
+    defer delete(wire_msg)
+
+    nonce_local := nonce
+    mem.copy(&wire_msg[0], &nonce_local[0], NONCE_SIZE)
+    copy(wire_msg[NONCE_SIZE:], encrypted)
+
+    // Write length prefix + message
+    len_buf: [2]u8
+    len_buf[0] = u8(wire_len >> 8)
+    len_buf[1] = u8(wire_len)
+
+    if !write_all(socket, len_buf[:]) {
+        return {}, false
+    }
+    if !write_all(socket, wire_msg) {
+        return {}, false
+    }
+
+    return nonce, true
+}
+
+// Read encrypted HANDSHAKE_INIT
+// Returns server_pubkey and nonce on success
+frame_read_handshake_init_encrypted :: proc(socket: net.TCP_Socket, psk: [PSK_SIZE]u8, allocator := context.allocator) -> (server_pubkey: [PUBKEY_SIZE]u8, nonce: [NONCE_SIZE]u8, ok: bool) {
+    // Read length prefix
+    len_buf: [2]u8
+    if !read_exact(socket, len_buf[:]) {
+        return {}, {}, false
+    }
+
+    msg_len := int(len_buf[0]) << 8 | int(len_buf[1])
+
+    // Expected: nonce (24) + encrypted (37 + 16) = 77 bytes
+    expected_len := NONCE_SIZE + HEADER_SIZE + PUBKEY_SIZE + TAG_SIZE
+    if msg_len != expected_len {
+        return {}, {}, false
+    }
+
+    // Read message
+    wire_msg := make([]u8, msg_len)
+    defer delete(wire_msg)
+
+    if !read_exact(socket, wire_msg) {
+        return {}, {}, false
+    }
+
+    // Extract nonce
+    copy(nonce[:], wire_msg[:NONCE_SIZE])
+
+    // Derive handshake key
+    handshake_key := derive_handshake_key(psk, nonce)
+    defer mem.zero_explicit(&handshake_key, size_of(handshake_key))
+
+    // Decrypt
+    encrypted := wire_msg[NONCE_SIZE:]
+    plaintext, dec_ok := decrypt_handshake_message(handshake_key, nonce, encrypted, allocator)
+    if !dec_ok {
+        return {}, {}, false
+    }
+    defer delete(plaintext)
+
+    // Verify message structure: type (1) || session_id (4) || pubkey (32)
+    if len(plaintext) != HEADER_SIZE + PUBKEY_SIZE {
+        return {}, {}, false
+    }
+
+    // Verify type
+    if Message_Type(plaintext[0]) != .HANDSHAKE_INIT {
+        return {}, {}, false
+    }
+
+    // Extract pubkey
+    copy(server_pubkey[:], plaintext[HEADER_SIZE:])
+
+    return server_pubkey, nonce, true
+}
+
+// Write encrypted HANDSHAKE_RESP
+// Sends: encrypted(type || session_id || client_pubkey || encrypted_psk) || tag (16)
+frame_write_handshake_resp_encrypted :: proc(socket: net.TCP_Socket, psk: [PSK_SIZE]u8, handshake_nonce: [NONCE_SIZE]u8, client_pubkey: [PUBKEY_SIZE]u8, encrypted_psk: []u8) -> bool {
+    // Derive handshake encryption key
+    handshake_key := derive_handshake_key(psk, handshake_nonce)
+    defer mem.zero_explicit(&handshake_key, size_of(handshake_key))
+
+    // Derive response nonce (different from init nonce to avoid nonce reuse)
+    resp_nonce := derive_response_nonce(handshake_nonce)
+
+    // Build message: type (1) || session_id (4) || client_pubkey (32) || encrypted_psk (48)
+    msg_len := HEADER_SIZE + PUBKEY_SIZE + len(encrypted_psk)
+    msg := make([]u8, msg_len)
+    defer delete(msg)
+
+    msg[0] = u8(Message_Type.HANDSHAKE_RESP)
+    // session_id = 0 (control plane)
+    msg[1] = 0
+    msg[2] = 0
+    msg[3] = 0
+    msg[4] = 0
+    // Copy pubkey
+    pubkey_local := client_pubkey
+    mem.copy(&msg[HEADER_SIZE], &pubkey_local[0], PUBKEY_SIZE)
+    // Copy encrypted_psk
+    copy(msg[HEADER_SIZE + PUBKEY_SIZE:], encrypted_psk)
+
+    // Encrypt
+    encrypted, enc_ok := encrypt_handshake_message(handshake_key, resp_nonce, msg)
+    if !enc_ok {
+        return false
+    }
+    defer delete(encrypted)
+
+    // Write length prefix + encrypted message
+    len_buf: [2]u8
+    len_buf[0] = u8(len(encrypted) >> 8)
+    len_buf[1] = u8(len(encrypted))
+
+    if !write_all(socket, len_buf[:]) {
+        return false
+    }
+    return write_all(socket, encrypted)
+}
+
+// Read encrypted HANDSHAKE_RESP
+// Returns client_pubkey and encrypted_psk on success
+frame_read_handshake_resp_encrypted :: proc(socket: net.TCP_Socket, psk: [PSK_SIZE]u8, handshake_nonce: [NONCE_SIZE]u8, allocator := context.allocator) -> (client_pubkey: [PUBKEY_SIZE]u8, encrypted_psk: []u8, ok: bool) {
+    // Read length prefix
+    len_buf: [2]u8
+    if !read_exact(socket, len_buf[:]) {
+        return {}, nil, false
+    }
+
+    msg_len := int(len_buf[0]) << 8 | int(len_buf[1])
+
+    // Expected: encrypted (1 + 4 + 32 + 48 + 16) = 101 bytes
+    expected_encrypted_psk_len := PSK_SIZE + TAG_SIZE  // 48
+    expected_len := HEADER_SIZE + PUBKEY_SIZE + expected_encrypted_psk_len + TAG_SIZE
+    if msg_len != expected_len {
+        return {}, nil, false
+    }
+
+    // Read encrypted message
+    encrypted := make([]u8, msg_len)
+    defer delete(encrypted)
+
+    if !read_exact(socket, encrypted) {
+        return {}, nil, false
+    }
+
+    // Derive handshake key
+    handshake_key := derive_handshake_key(psk, handshake_nonce)
+    defer mem.zero_explicit(&handshake_key, size_of(handshake_key))
+
+    // Derive response nonce
+    resp_nonce := derive_response_nonce(handshake_nonce)
+
+    // Decrypt
+    plaintext, dec_ok := decrypt_handshake_message(handshake_key, resp_nonce, encrypted, allocator)
+    if !dec_ok {
+        return {}, nil, false
+    }
+
+    // Verify message structure: type (1) || session_id (4) || pubkey (32) || encrypted_psk (48)
+    expected_plaintext_len := HEADER_SIZE + PUBKEY_SIZE + expected_encrypted_psk_len
+    if len(plaintext) != expected_plaintext_len {
+        delete(plaintext)
+        return {}, nil, false
+    }
+
+    // Verify type
+    if Message_Type(plaintext[0]) != .HANDSHAKE_RESP {
+        delete(plaintext)
+        return {}, nil, false
+    }
+
+    // Extract pubkey
+    copy(client_pubkey[:], plaintext[HEADER_SIZE:HEADER_SIZE + PUBKEY_SIZE])
+
+    // Extract encrypted_psk - need to copy since we're freeing plaintext
+    encrypted_psk = make([]u8, expected_encrypted_psk_len, allocator)
+    copy(encrypted_psk, plaintext[HEADER_SIZE + PUBKEY_SIZE:])
+
+    delete(plaintext)
+    return client_pubkey, encrypted_psk, true
+}
+
+// Read encrypted HANDSHAKE_RESP trying multiple PSKs (for OTP mode with clock drift)
+// Returns client_pubkey, encrypted_psk, and the PSK that worked
+frame_read_handshake_resp_encrypted_multi :: proc(socket: net.TCP_Socket, psks: [][PSK_SIZE]u8, handshake_nonce: [NONCE_SIZE]u8, allocator := context.allocator) -> (client_pubkey: [PUBKEY_SIZE]u8, encrypted_psk: []u8, matched_psk: [PSK_SIZE]u8, ok: bool) {
+    // Read length prefix
+    len_buf: [2]u8
+    if !read_exact(socket, len_buf[:]) {
+        return {}, nil, {}, false
+    }
+
+    msg_len := int(len_buf[0]) << 8 | int(len_buf[1])
+
+    // Expected: encrypted (1 + 4 + 32 + 48 + 16) = 101 bytes
+    expected_encrypted_psk_len := PSK_SIZE + TAG_SIZE  // 48
+    expected_len := HEADER_SIZE + PUBKEY_SIZE + expected_encrypted_psk_len + TAG_SIZE
+    if msg_len != expected_len {
+        return {}, nil, {}, false
+    }
+
+    // Read encrypted message
+    encrypted := make([]u8, msg_len)
+    defer delete(encrypted)
+
+    if !read_exact(socket, encrypted) {
+        return {}, nil, {}, false
+    }
+
+    // Derive response nonce (same for all attempts)
+    resp_nonce := derive_response_nonce(handshake_nonce)
+
+    // Try each PSK
+    for psk in psks {
+        handshake_key := derive_handshake_key(psk, handshake_nonce)
+
+        // Try to decrypt
+        plaintext, dec_ok := decrypt_handshake_message(handshake_key, resp_nonce, encrypted, allocator)
+        mem.zero_explicit(&handshake_key, size_of(handshake_key))
+
+        if !dec_ok {
+            continue  // Try next PSK
+        }
+
+        // Verify message structure
+        expected_plaintext_len := HEADER_SIZE + PUBKEY_SIZE + expected_encrypted_psk_len
+        if len(plaintext) != expected_plaintext_len {
+            delete(plaintext)
+            continue
+        }
+
+        // Verify type
+        if Message_Type(plaintext[0]) != .HANDSHAKE_RESP {
+            delete(plaintext)
+            continue
+        }
+
+        // Success! Extract data
+        copy(client_pubkey[:], plaintext[HEADER_SIZE:HEADER_SIZE + PUBKEY_SIZE])
+
+        encrypted_psk = make([]u8, expected_encrypted_psk_len, allocator)
+        copy(encrypted_psk, plaintext[HEADER_SIZE + PUBKEY_SIZE:])
+
+        delete(plaintext)
+        return client_pubkey, encrypted_psk, psk, true
+    }
+
+    return {}, nil, {}, false
+}

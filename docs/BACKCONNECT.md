@@ -173,21 +173,55 @@ For security, pin the server's public key to prevent MITM attacks:
 - **Key Derivation:** SHA256(shared_secret || nonce || direction || psk)
 - **Forward Secrecy:** Client generates ephemeral keypair per connection
 
-### Handshake
+### Encrypted Handshake
 
+The entire handshake is encrypted to prevent protocol fingerprinting. Only the random nonce is visible to observers - all other data (including public keys) is hidden.
+
+**Handshake encryption key derivation:**
+```
+handshake_key = SHA256(expanded_otp || nonce || "handshake")
+
+Where expanded_otp = SHA256(short_otp) in OTP mode, or master_psk in raw PSK mode
+```
+
+**Wire format:**
+```
+HANDSHAKE_INIT (server → client):
+┌────────────────┬────────────┬───────────────────────────────────────────┐
+│ Length (2 BE)  │ Nonce (24) │ Encrypted(type + session_id + server_pubkey) + Tag (16) │
+└────────────────┴────────────┴───────────────────────────────────────────┘
+Total: 2 + 24 + 37 + 16 = 79 bytes
+
+HANDSHAKE_RESP (client → server):
+┌────────────────┬───────────────────────────────────────────────────────────────┐
+│ Length (2 BE)  │ Encrypted(type + session_id + client_pubkey + encrypted_psk) + Tag (16) │
+└────────────────┴───────────────────────────────────────────────────────────────┘
+Total: 2 + 85 + 16 = 103 bytes (uses nonce XOR 0xFF for different nonce)
+
+HANDSHAKE_ACK (server → client):
+  Standard encrypted message format (uses session keys)
+```
+
+**Sequence diagram:**
 ```
 Client                              Server
    |                                   |
    |◀──────── TCP Connect ─────────────|
    |                                   |
-   |◀─────── HANDSHAKE_INIT ───────────|  server_pubkey (32) + nonce (24)
+   |◀─────── HANDSHAKE_INIT ───────────|  [nonce] + encrypted(server_pubkey)
    |                                   |
-   |──────── HANDSHAKE_RESP ──────────▶|  client_pubkey (32) + encrypted_psk (48)
+   |──────── HANDSHAKE_RESP ──────────▶|  encrypted(client_pubkey + encrypted_psk)
    |                                   |
-   |◀─────── HANDSHAKE_ACK ────────────|  status (encrypted)
+   |◀─────── HANDSHAKE_ACK ────────────|  status (encrypted with session keys)
    |                                   |
    |═══════ Encrypted Channel ═════════|
 ```
+
+**Security benefit:** Without the PSK, an observer cannot:
+- Identify this as a backconnect proxy (no recognizable magic bytes)
+- See the public keys being exchanged
+- Determine message types or structure
+- Distinguish this from random data
 
 ### Wire Format
 
@@ -225,6 +259,17 @@ Multiple SOCKS5 connections are multiplexed over a single encrypted tunnel using
 3. **Pin server keys:** Always use `-bc-pubkey` in production
 4. **Restrict SOCKS5 access:** Bind to localhost or use `-socks-auth`
 5. **Firewall the BC port:** Only allow expected client IPs on port 8443
+
+### Protocol Fingerprinting Resistance
+
+The encrypted handshake prevents passive observers from identifying this as a backconnect proxy:
+
+| Before (Plaintext Handshake) | After (Encrypted Handshake) |
+|------------------------------|----------------------------|
+| Public keys visible (32+32 bytes) | All encrypted, only random nonce visible |
+| Message types identifiable | Encrypted, indistinguishable |
+| Fixed message sizes reveal protocol | Sizes include auth tag, less predictable |
+| Easy to fingerprint and block | Looks like random encrypted data |
 
 ## Multiple Clients
 
