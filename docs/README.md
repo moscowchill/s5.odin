@@ -80,9 +80,9 @@ sqlmap --proxy=socks5://pivot:pass@proxy:1080 ...
 
 **Detection:**
 - *Normal mode:* SOCKS5 handshake is plaintext and easily detected by DPI
-- *Backconnect mode:* Tunnel is encrypted (X25519 + ChaCha20-Poly1305), but SOCKS5 frontend is still plaintext
+- *Backconnect mode:* Fully encrypted tunnel with encrypted handshake - only random bytes visible on the wire, resistant to protocol fingerprinting
 
-For stealth on the SOCKS5 frontend, wrap it in an encrypted tunnel:
+For stealth on the SOCKS5 frontend (normal mode), wrap it in an encrypted tunnel:
 - SSH tunnel: `ssh -D 1080 user@host`
 - TLS wrapper: `stunnel`
 - VPN: Wireguard/OpenVPN
