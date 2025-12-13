@@ -348,6 +348,8 @@ mux_reader_proc :: proc(mux: ^Multiplexer) {
                 fmt.printf("[MUX] Reader: frame_read_encrypted failed\n")
             }
             if !mux.should_stop {
+                mux.should_stop = true
+                mux.is_running = false
                 if mux.on_disconnect != nil {
                     mux.on_disconnect(mux)
                 }
@@ -496,8 +498,12 @@ mux_writer_proc :: proc(mux: ^Multiplexer) {
                     fmt.printf("[MUX] Writer: frame_write_encrypted failed\n")
                 }
                 delete(data)
-                if !mux.should_stop && mux.on_disconnect != nil {
-                    mux.on_disconnect(mux)
+                if !mux.should_stop {
+                    mux.should_stop = true
+                    mux.is_running = false
+                    if mux.on_disconnect != nil {
+                        mux.on_disconnect(mux)
+                    }
                 }
                 break
             }
@@ -535,10 +541,11 @@ mux_keepalive_proc :: proc(mux: ^Multiplexer) {
         since_pong := time.diff(mux.last_pong, time.now())
         if since_pong >= PING_INTERVAL + PING_TIMEOUT {
             // Connection timed out
+            mux.should_stop = true
+            mux.is_running = false
             if mux.on_disconnect != nil {
                 mux.on_disconnect(mux)
             }
-            mux.should_stop = true
             break
         }
     }
