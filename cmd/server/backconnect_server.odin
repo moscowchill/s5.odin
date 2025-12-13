@@ -683,9 +683,7 @@ bc_handshake :: proc(socket: net.TCP_Socket) -> ^BC_Client {
     x25519.scalarmult(client.crypto_ctx.shared_secret[:], g_config.server_privkey[:], client_pubkey[:])
     client.crypto_ctx.handshake_nonce = nonce
 
-    // Verify PSK
-    // Convert allowed_psks to slice for verification
-    psks_slice := g_config.allowed_psks[:]
+    // Verify PSK (psks_slice already defined above)
     if g_config.verbose {
         log.infof("Verifying PSK, encrypted_psk len=%d, num_psks=%d", len(encrypted_psk), len(psks_slice))
         shared_hex := protocol.bytes_to_hex(client.crypto_ctx.shared_secret[:])
