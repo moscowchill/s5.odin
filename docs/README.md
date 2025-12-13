@@ -16,8 +16,8 @@ Production-ready SOCKS5 proxy written in Odin. Hardened for real traffic with ze
 ## Build
 
 ```bash
-./build.sh                                                    # Quick build
-odin build s5_proxy.odin -file -o:speed -no-bounds-check    # Optimized
+./build.sh      # Linux/macOS
+build.bat       # Windows
 ```
 
 ## Usage
