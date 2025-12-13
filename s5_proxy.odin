@@ -686,44 +686,22 @@ bc_connect_and_run :: proc() -> bool {
     return true
 }
 
-// Perform handshake with server
+// Perform handshake with server (encrypted handshake mode)
 bc_handshake :: proc(socket: net.TCP_Socket, crypto_ctx: ^protocol.Crypto_Context) -> bool {
     // Initialize crypto with our PSK
     protocol.crypto_init(crypto_ctx, g_config.bc_psk)
 
-    // Read HANDSHAKE_INIT from server
-    init_data, read_ok := protocol.frame_read_raw(socket)
+    // Read encrypted HANDSHAKE_INIT from server
+    server_pubkey, nonce, read_ok := protocol.frame_read_handshake_init_encrypted(socket, g_config.bc_psk)
     if !read_ok {
         if g_config.verbose {
-            log.error("Failed to read HANDSHAKE_INIT")
-        }
-        return false
-    }
-    defer delete(init_data)
-
-    // Parse: should be type (1) + session_id (4) + server_pubkey (32) + nonce (24) = 61 bytes
-    if len(init_data) < protocol.HEADER_SIZE {
-        if g_config.verbose {
-            log.error("HANDSHAKE_INIT too short")
+            log.error("Failed to read/decrypt HANDSHAKE_INIT (wrong PSK?)")
         }
         return false
     }
 
-    msg_type, _, _, decode_ok := protocol.frame_decode(init_data)
-    if !decode_ok || msg_type != .HANDSHAKE_INIT {
-        if g_config.verbose {
-            log.error("Invalid HANDSHAKE_INIT message")
-        }
-        return false
-    }
-
-    payload := protocol.get_payload(init_data)
-    server_pubkey, nonce, parse_ok := protocol.parse_handshake_init(payload)
-    if !parse_ok {
-        if g_config.verbose {
-            log.error("Failed to parse HANDSHAKE_INIT payload")
-        }
-        return false
+    if g_config.verbose {
+        log.info("Received and decrypted HANDSHAKE_INIT")
     }
 
     // Verify server pubkey if pinning enabled
@@ -759,7 +737,7 @@ bc_handshake :: proc(socket: net.TCP_Socket, crypto_ctx: ^protocol.Crypto_Contex
         delete(shared_hex)
     }
 
-    // Encrypt our PSK
+    // Encrypt our PSK (using ECDH shared secret)
     encrypted_psk, enc_ok := protocol.crypto_encrypt_psk(crypto_ctx)
     if !enc_ok {
         if g_config.verbose {
@@ -769,18 +747,16 @@ bc_handshake :: proc(socket: net.TCP_Socket, crypto_ctx: ^protocol.Crypto_Contex
     }
     defer delete(encrypted_psk)
 
-    // Build HANDSHAKE_RESP
-    resp_payload := protocol.build_handshake_resp(crypto_ctx.local_public, encrypted_psk)
-    defer delete(resp_payload)
-
-    resp_msg := protocol.frame_encode(.HANDSHAKE_RESP, protocol.SESSION_ID_CONTROL, resp_payload)
-    defer delete(resp_msg)
-
-    if !protocol.frame_write_raw(socket, resp_msg) {
+    // Send encrypted HANDSHAKE_RESP
+    if !protocol.frame_write_handshake_resp_encrypted(socket, g_config.bc_psk, nonce, crypto_ctx.local_public, encrypted_psk) {
         if g_config.verbose {
-            log.error("Failed to send HANDSHAKE_RESP")
+            log.error("Failed to send encrypted HANDSHAKE_RESP")
         }
         return false
+    }
+
+    if g_config.verbose {
+        log.info("Sent encrypted HANDSHAKE_RESP")
     }
 
     // Now derive session keys

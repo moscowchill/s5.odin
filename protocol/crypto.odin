@@ -502,3 +502,79 @@ generate_valid_otps :: proc(psk: [PSK_SIZE]u8, unix_time: i64, allocator := cont
 otp_seconds_remaining :: proc(unix_time: i64) -> i64 {
     return OTP_WINDOW_SECS - (unix_time % OTP_WINDOW_SECS)
 }
+
+// Derive handshake encryption key from PSK and nonce
+// This key is used to encrypt the initial handshake messages (pubkeys)
+// before the ECDH shared secret is established
+derive_handshake_key :: proc(psk: [PSK_SIZE]u8, nonce: [NONCE_SIZE]u8) -> [KEY_SIZE]u8 {
+    key: [KEY_SIZE]u8
+
+    // Key = SHA256(PSK || nonce || "handshake")
+    derive_buf: [PSK_SIZE + NONCE_SIZE + 9]u8  // 9 = len("handshake")
+    psk_local := psk
+    nonce_local := nonce
+    mem.copy(&derive_buf[0], &psk_local[0], PSK_SIZE)
+    mem.copy(&derive_buf[PSK_SIZE], &nonce_local[0], NONCE_SIZE)
+    copy(derive_buf[PSK_SIZE + NONCE_SIZE:], "handshake")
+
+    hash.hash_bytes_to_buffer(.SHA256, derive_buf[:], key[:])
+
+    mem.zero_explicit(&derive_buf, size_of(derive_buf))
+
+    return key
+}
+
+// Derive response nonce from handshake nonce (XOR with 0x01 pattern)
+// This ensures INIT and RESP use different nonces with the same key
+derive_response_nonce :: proc(handshake_nonce: [NONCE_SIZE]u8) -> [NONCE_SIZE]u8 {
+    resp_nonce: [NONCE_SIZE]u8
+    for i in 0..<NONCE_SIZE {
+        resp_nonce[i] = handshake_nonce[i] ~ 0xFF  // XOR with all 1s
+    }
+    return resp_nonce
+}
+
+// Encrypt handshake message (used for HANDSHAKE_INIT and HANDSHAKE_RESP)
+// Uses XChaCha20-Poly1305 with the handshake key
+encrypt_handshake_message :: proc(key: [KEY_SIZE]u8, nonce: [NONCE_SIZE]u8, plaintext: []u8, allocator := context.allocator) -> ([]u8, bool) {
+    // Output: ciphertext + tag (16 bytes)
+    output := make([]u8, len(plaintext) + TAG_SIZE, allocator)
+    ciphertext := output[:len(plaintext)]
+    tag := output[len(plaintext):]
+
+    ctx: chacha20poly1305.Context
+    key_local := key
+    nonce_local := nonce
+    chacha20poly1305.init_xchacha(&ctx, key_local[:])
+    chacha20poly1305.seal(&ctx, ciphertext, tag, nonce_local[:], nil, plaintext)
+    chacha20poly1305.reset(&ctx)
+
+    return output, true
+}
+
+// Decrypt handshake message
+decrypt_handshake_message :: proc(key: [KEY_SIZE]u8, nonce: [NONCE_SIZE]u8, ciphertext_with_tag: []u8, allocator := context.allocator) -> ([]u8, bool) {
+    if len(ciphertext_with_tag) < TAG_SIZE {
+        return nil, false
+    }
+
+    ciphertext_len := len(ciphertext_with_tag) - TAG_SIZE
+    ciphertext := ciphertext_with_tag[:ciphertext_len]
+    tag := ciphertext_with_tag[ciphertext_len:]
+
+    plaintext := make([]u8, ciphertext_len, allocator)
+
+    ctx: chacha20poly1305.Context
+    key_local := key
+    nonce_local := nonce
+    chacha20poly1305.init_xchacha(&ctx, key_local[:])
+
+    if !chacha20poly1305.open(&ctx, plaintext, nonce_local[:], nil, ciphertext, tag) {
+        chacha20poly1305.reset(&ctx)
+        delete(plaintext)
+        return nil, false
+    }
+
+    chacha20poly1305.reset(&ctx)
+    return plaintext, true
+}

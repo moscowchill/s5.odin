@@ -623,7 +623,7 @@ handle_bc_client_thread :: proc(socket: net.TCP_Socket) {
 
 bc_handshake :: proc(socket: net.TCP_Socket) -> ^BC_Client {
     if g_config.verbose {
-        log.info("BC handshake: starting")
+        log.info("BC handshake: starting (encrypted mode)")
     }
     client := new(BC_Client)
     client.socket = socket
@@ -634,65 +634,49 @@ bc_handshake :: proc(socket: net.TCP_Socket) -> ^BC_Client {
     client.crypto_ctx.local_private = g_config.server_privkey
     client.crypto_ctx.local_public = g_config.server_pubkey
 
-    // Generate nonce
-    nonce := protocol.crypto_generate_nonce()
-
-    // Send HANDSHAKE_INIT
-    init_payload := protocol.build_handshake_init(g_config.server_pubkey, nonce)
-    defer delete(init_payload)
-
-    init_msg := protocol.frame_encode(.HANDSHAKE_INIT, protocol.SESSION_ID_CONTROL, init_payload)
-    defer delete(init_msg)
-
-    if g_config.verbose {
-        log.infof("BC handshake: sending HANDSHAKE_INIT (%d bytes)", len(init_msg))
+    // Get allowed PSKs for handshake encryption
+    // In OTP mode: these are expanded short OTPs (SHA256 of short OTP)
+    // In raw PSK mode: this is the master PSK
+    psks_slice := g_config.allowed_psks[:]
+    if len(psks_slice) == 0 {
+        if g_config.verbose {
+            log.error("No allowed PSKs configured")
+        }
+        free(client)
+        return nil
     }
 
-    if !protocol.frame_write_raw(socket, init_msg) {
+    // Send encrypted HANDSHAKE_INIT using first (current window) PSK
+    nonce, write_ok := protocol.frame_write_handshake_init_encrypted(socket, psks_slice[0], g_config.server_pubkey)
+    if !write_ok {
         if g_config.verbose {
-            log.error("Failed to send HANDSHAKE_INIT")
+            log.error("Failed to send encrypted HANDSHAKE_INIT")
         }
         free(client)
         return nil
     }
 
     if g_config.verbose {
-        log.info("BC handshake: waiting for HANDSHAKE_RESP")
+        log.info("BC handshake: sent encrypted HANDSHAKE_INIT, waiting for HANDSHAKE_RESP")
     }
 
-    // Read HANDSHAKE_RESP
-    resp_data, read_ok := protocol.frame_read_raw(socket)
+    // Read encrypted HANDSHAKE_RESP - try all allowed PSKs for clock drift tolerance
+    client_pubkey, encrypted_psk, matched_psk, read_ok := protocol.frame_read_handshake_resp_encrypted_multi(socket, psks_slice, nonce)
     if !read_ok {
         if g_config.verbose {
-            log.error("Failed to read HANDSHAKE_RESP")
+            log.error("Failed to read/decrypt HANDSHAKE_RESP (wrong PSK or OTP expired?)")
         }
         free(client)
         return nil
     }
-    defer delete(resp_data)
+    defer delete(encrypted_psk)
 
     if g_config.verbose {
-        log.infof("BC handshake: received HANDSHAKE_RESP (%d bytes)", len(resp_data))
+        log.info("BC handshake: received and decrypted HANDSHAKE_RESP")
     }
 
-    msg_type, _, _, decode_ok := protocol.frame_decode(resp_data)
-    if !decode_ok || msg_type != .HANDSHAKE_RESP {
-        if g_config.verbose {
-            log.error("Invalid HANDSHAKE_RESP")
-        }
-        free(client)
-        return nil
-    }
-
-    payload := protocol.get_payload(resp_data)
-    client_pubkey, encrypted_psk, parse_ok := protocol.parse_handshake_resp(payload)
-    if !parse_ok {
-        if g_config.verbose {
-            log.error("Failed to parse HANDSHAKE_RESP")
-        }
-        free(client)
-        return nil
-    }
+    // Use the matched PSK for further operations
+    _ = matched_psk  // Will be verified again in crypto_verify_psk
 
     // Set client's public key and compute shared secret
     protocol.crypto_set_remote_pubkey(&client.crypto_ctx, client_pubkey)
