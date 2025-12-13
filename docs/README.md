@@ -22,59 +22,56 @@ odin build s5_proxy.odin -file -o:speed -no-bounds-check    # Optimized
 
 ## Usage
 
+### Normal Mode (Local SOCKS5 Server)
+
 ```bash
-# Basic
-./s5proxy
+./s5proxy                                          # Listen on 127.0.0.1:1080
+./s5proxy -addr 0.0.0.0:1080                       # Listen on all interfaces
+./s5proxy -addr 0.0.0.0:1080 -auth -user a -pass b # With authentication
+```
 
-# Custom address
-./s5proxy -addr 0.0.0.0:1080
+### Backconnect Mode (Reverse Tunnel)
 
-# With authentication
-./s5proxy -addr 0.0.0.0:1080 -auth -user admin -pass secret
+```bash
+# Server (on your VPS)
+./backconnect_server -bc-psk $(openssl rand -hex 32)
 
-# Verbose logging
-./s5proxy -v
+# Client (on target network) - use OTP displayed by server
+./s5proxy -backconnect -bc-server your-vps:8443 -bc-otp <otp>
 
-# Custom buffer size
-./s5proxy -buffer 32768
+# Route traffic through client's network
+curl --socks5 your-vps:6000 http://internal-target/
 ```
 
 ## Options
 
+### Client (s5proxy)
+
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-addr` | Listen address:port | `127.0.0.1:1080` |
-| `-v` | Verbose logging | `false` |
-| `-auth` | Require authentication | `false` |
+| `-addr` | Listen address (normal mode) | `127.0.0.1:1080` |
+| `-auth` | Require SOCKS5 authentication | `false` |
 | `-user` | Username | `admin` |
 | `-pass` | Password | `password` |
-| `-buffer` | Buffer size (bytes) | `16384` |
+| `-v` | Verbose logging | `false` |
+| `-backconnect` | Enable backconnect client mode | `false` |
+| `-bc-server` | Backconnect server address | - |
+| `-bc-otp` | One-time password (8 hex chars) | - |
+| `-bc-psk` | Raw PSK for `-no-otp` servers | - |
+| `-bc-pubkey` | Pin server public key | - |
+| `-no-reconnect` | Disable auto-reconnect | `false` |
 
-## Testing
+### Server (backconnect_server)
 
-```bash
-# Basic test
-curl -x socks5://127.0.0.1:1080 https://ifconfig.me
-
-# With auth
-curl -x socks5://user:pass@127.0.0.1:1080 https://ifconfig.me
-
-# Proxychains
-echo "socks5 127.0.0.1 1080" > /tmp/proxychains.conf
-proxychains4 -f /tmp/proxychains.conf curl https://ifconfig.me
-```
-
-## Pentesting
-
-```bash
-# Internal pivoting
-./s5proxy -addr 0.0.0.0:1080 -auth -user pivot -pass [random]
-
-# Use with tools
-nmap --proxies socks5://pivot:pass@proxy:1080 target
-burpsuite  # Configure SOCKS5 in settings
-sqlmap --proxy=socks5://pivot:pass@proxy:1080 ...
-```
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-bc-addr` | Listen address for clients | `0.0.0.0:8443` |
+| `-bc-psk` | Master PSK (64 hex chars) | required |
+| `-no-otp` | Use raw PSK instead of OTP | `false` |
+| `-socks-auth` | Require auth on SOCKS5 ports | `false` |
+| `-socks-user` | SOCKS5 username | `admin` |
+| `-socks-pass` | SOCKS5 password | `password` |
+| `-v` | Verbose logging | `false` |
 
 ## Security Notes
 
