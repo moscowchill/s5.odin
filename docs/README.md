@@ -76,13 +76,8 @@ curl --socks5 your-vps:6000 http://internal-target/
 ## Security Notes
 
 **Detection:**
-- *Normal mode:* SOCKS5 handshake is plaintext and easily detected by DPI
-- *Backconnect mode:* Fully encrypted tunnel with encrypted handshake - only random bytes visible on the wire, resistant to protocol fingerprinting
-
-For stealth on the SOCKS5 frontend (normal mode), wrap it in an encrypted tunnel:
-- SSH tunnel: `ssh -D 1080 user@host`
-- TLS wrapper: `stunnel`
-- VPN: Wireguard/OpenVPN
+- *Normal mode:* SOCKS5 handshake is plaintext and detectable by DPI
+- *Backconnect mode:* Fully encrypted with encrypted handshake - resistant to protocol fingerprinting
 
 **Defense:**
 - Change default credentials
