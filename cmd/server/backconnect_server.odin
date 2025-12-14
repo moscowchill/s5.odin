@@ -27,6 +27,62 @@ import "core:crypto/x25519"
 
 import "../../protocol"
 
+// ============================================================================
+// ANSI Colors & Styling
+// ============================================================================
+
+// Colors
+C_RESET    :: "\x1b[0m"
+C_BOLD     :: "\x1b[1m"
+C_DIM      :: "\x1b[2m"
+C_RED      :: "\x1b[31m"
+C_GREEN    :: "\x1b[32m"
+C_YELLOW   :: "\x1b[33m"
+C_BLUE     :: "\x1b[34m"
+C_MAGENTA  :: "\x1b[35m"
+C_CYAN     :: "\x1b[36m"
+C_WHITE    :: "\x1b[37m"
+C_B_GREEN  :: "\x1b[1;32m"
+C_B_RED    :: "\x1b[1;31m"
+C_B_YELLOW :: "\x1b[1;33m"
+C_B_CYAN   :: "\x1b[1;36m"
+C_B_MAGENTA:: "\x1b[1;35m"
+
+// Symbols
+SYM_CONNECTED    :: "●"
+SYM_DISCONNECTED :: "○"
+SYM_ARROW        :: "→"
+SYM_KEY          :: "🔑"
+SYM_LOCK         :: "🔒"
+
+// Box drawing (rounded)
+BOX_TL :: "╭"
+BOX_TR :: "╮"
+BOX_BL :: "╰"
+BOX_BR :: "╯"
+BOX_H  :: "─"
+BOX_V  :: "│"
+
+// Get current timestamp string
+get_timestamp :: proc() -> string {
+    now := time.now()
+    h, m, s := time.clock_from_time(now)
+    return fmt.tprintf("%02d:%02d:%02d", h, m, s)
+}
+
+// Print the banner
+print_banner :: proc() {
+    fmt.printf("%s", C_B_CYAN)
+    fmt.println("  ____  ____     ___      _ _       ")
+    fmt.println(" / ___|| ___|   / _ \\  __| (_)_ __  ")
+    fmt.println(" \\___ \\|___ \\  | | | |/ _` | | '_ \\ ")
+    fmt.println("  ___) |___) | | |_| | (_| | | | | |")
+    fmt.println(" |____/|____/ (_)___/ \\__,_|_|_| |_|")
+    fmt.printf("%s", C_RESET)
+    fmt.printf("  %s%sBackconnect Proxy Server%s\n", C_DIM, C_WHITE, C_RESET)
+    fmt.println()
+}
+
 // SOCKS5 Protocol Constants
 SOCKS_VERSION :: 0x05
 AUTH_NONE :: 0x00
@@ -139,16 +195,16 @@ main :: proc() {
 
     parse_args()
 
+    // Print banner
+    print_banner()
+
+    // Print server public key
+    pubkey_hex := protocol.bytes_to_hex(g_config.server_pubkey[:])
+    fmt.printf("%s%s pubkey:%s %s%s%s\n", C_DIM, SYM_KEY, C_RESET, C_CYAN, pubkey_hex, C_RESET)
+    delete(pubkey_hex)
+
     if g_config.verbose {
-        log.info("Starting Backconnect Server")
         log.infof("Backconnect listener: %s", g_config.bc_addr)
-        pubkey_hex := protocol.bytes_to_hex(g_config.server_pubkey[:])
-        log.infof("Server public key: %s", pubkey_hex)
-        delete(pubkey_hex)
-    } else {
-        pubkey_hex := protocol.bytes_to_hex(g_config.server_pubkey[:])
-        fmt.printf("Server public key: %s\n", pubkey_hex)
-        delete(pubkey_hex)
     }
 
     // Display OTP if enabled
@@ -183,11 +239,24 @@ display_current_otp :: proc() {
     hours := remaining / 3600
     mins := (remaining % 3600) / 60
 
-    fmt.printf("\n")
-    fmt.printf("========================================\n")
-    fmt.printf("  OTP (valid for %dh %dm): %s\n", hours, mins, otp_hex)
-    fmt.printf("========================================\n")
-    fmt.printf("\n")
+    // Fixed width box (36 chars inner)
+    BOX_WIDTH :: 36
+
+    fmt.println()
+    fmt.printf("%s%s", C_YELLOW, BOX_TL)
+    for _ in 0..<BOX_WIDTH { fmt.printf("%s", BOX_H) }
+    fmt.printf("%s%s\n", BOX_TR, C_RESET)
+
+    fmt.printf("%s%s%s  %s OTP: %s%s%s  %s(valid %dh %dm)%s  %s%s%s\n",
+        C_YELLOW, BOX_V, C_RESET,
+        SYM_LOCK, C_B_YELLOW, otp_hex, C_RESET,
+        C_DIM, hours, mins, C_RESET,
+        C_YELLOW, BOX_V, C_RESET)
+
+    fmt.printf("%s%s", C_YELLOW, BOX_BL)
+    for _ in 0..<BOX_WIDTH { fmt.printf("%s", BOX_H) }
+    fmt.printf("%s%s\n", BOX_BR, C_RESET)
+    fmt.println()
 
     // Update current window
     g_config.current_otp_window = protocol.get_current_otp_window(unix_time)
@@ -228,7 +297,8 @@ otp_refresh_thread :: proc() {
 
         if current_window != g_config.current_otp_window {
             // Window changed, display new OTP
-            fmt.printf("\n[OTP ROTATED]\n")
+            ts := get_timestamp()
+            fmt.printf("\n%s[%s]%s %s%s OTP rotated%s\n", C_DIM, ts, C_RESET, C_B_MAGENTA, SYM_LOCK, C_RESET)
             display_current_otp()
         }
     }
@@ -493,9 +563,12 @@ run_bc_listener :: proc() {
     }
     defer net.close(listen_socket)
 
-    if !g_config.verbose {
-        fmt.printf("Backconnect listener on %s\n", g_config.bc_addr)
-    }
+    // Print listener info
+    ts := get_timestamp()
+    fmt.printf("%s[%s]%s %s%s%s Listening on %s%s%s\n",
+        C_DIM, ts, C_RESET,
+        C_B_CYAN, SYM_ARROW, C_RESET,
+        C_WHITE, g_config.bc_addr, C_RESET)
 
     for {
         client_socket, client_endpoint, accept_err := net.accept_tcp(listen_socket)
@@ -565,7 +638,13 @@ handle_bc_client_thread :: proc(socket: net.TCP_Socket) {
     defer delete(port_payload)
     protocol.send_message(client.socket, &client.crypto_ctx, .PORT_ASSIGNED, protocol.SESSION_ID_CONTROL, port_payload)
 
-    fmt.printf("Backconnect client connected (id=%d, port=%d)\n", client.id, client.socks_port)
+    ts := get_timestamp()
+    fmt.printf("%s[%s]%s %s%s%s Client %s#%d%s connected %s→%s port %s%d%s\n",
+        C_DIM, ts, C_RESET,
+        C_B_GREEN, SYM_CONNECTED, C_RESET,
+        C_WHITE, client.id, C_RESET,
+        C_DIM, C_RESET,
+        C_B_GREEN, client.socks_port, C_RESET)
 
     // Wait for disconnect
     for client.mux.is_running {
@@ -576,11 +655,16 @@ handle_bc_client_thread :: proc(socket: net.TCP_Socket) {
     stop_client_socks_listener(client)
 
     // Cleanup
+    ts = get_timestamp()
     if g_config.verbose {
         log.infof("BC client %d disconnected", client.id)
-    } else {
-        fmt.printf("Backconnect client disconnected (id=%d, port=%d)\n", client.id, client.socks_port)
     }
+    fmt.printf("%s[%s]%s %s%s%s Client %s#%d%s disconnected %s←%s port %s%d%s\n",
+        C_DIM, ts, C_RESET,
+        C_DIM, SYM_DISCONNECTED, C_RESET,
+        C_DIM, client.id, C_RESET,
+        C_DIM, C_RESET,
+        C_DIM, client.socks_port, C_RESET)
 
     sync.mutex_lock(&g_clients_mutex)
     delete_key(&g_clients, client.id)
