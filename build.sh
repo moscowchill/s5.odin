@@ -4,6 +4,7 @@
 set -e
 
 ODIN="${ODIN:-odin}"
+BUILD_DIR="build"
 
 echo "==================================="
 echo "SOCKS5 Proxy Build Script"
@@ -21,18 +22,21 @@ echo "Odin version:"
 $ODIN version
 echo
 
+# Create build directory
+mkdir -p "$BUILD_DIR"
+
 # Build Client
 echo "==================================="
 echo "Building Client"
 echo "==================================="
 
 echo "[1/2] Building client (debug)..."
-$ODIN build s5_proxy.odin -file -out:s5proxy_dev
-echo "[OK] s5proxy_dev"
+$ODIN build s5_proxy.odin -file -out:$BUILD_DIR/s5proxy_dev
+echo "[OK] $BUILD_DIR/s5proxy_dev"
 
 echo "[2/2] Building client (release)..."
-$ODIN build s5_proxy.odin -file -o:speed -no-bounds-check -out:s5proxy
-echo "[OK] s5proxy"
+$ODIN build s5_proxy.odin -file -o:speed -no-bounds-check -out:$BUILD_DIR/s5proxy
+echo "[OK] $BUILD_DIR/s5proxy"
 
 echo
 # Build Server
@@ -41,20 +45,20 @@ echo "Building Server"
 echo "==================================="
 
 echo "[1/2] Building server (debug)..."
-$ODIN build cmd/server -out:backconnect_server_dev
-echo "[OK] backconnect_server_dev"
+$ODIN build cmd/server -out:$BUILD_DIR/backconnect_server_dev
+echo "[OK] $BUILD_DIR/backconnect_server_dev"
 
 echo "[2/2] Building server (release)..."
-$ODIN build cmd/server -o:speed -no-bounds-check -out:backconnect_server
-echo "[OK] backconnect_server"
+$ODIN build cmd/server -o:speed -no-bounds-check -out:$BUILD_DIR/backconnect_server
+echo "[OK] $BUILD_DIR/backconnect_server"
 
 echo
 echo "==================================="
 echo "Done"
 echo "==================================="
 echo
-echo "  s5proxy                - Client (release)"
-echo "  s5proxy_dev            - Client (debug)"
-echo "  backconnect_server     - Server (release)"
-echo "  backconnect_server_dev - Server (debug)"
+echo "  $BUILD_DIR/s5proxy                - Client (release)"
+echo "  $BUILD_DIR/s5proxy_dev            - Client (debug)"
+echo "  $BUILD_DIR/backconnect_server     - Server (release)"
+echo "  $BUILD_DIR/backconnect_server_dev - Server (debug)"
 echo

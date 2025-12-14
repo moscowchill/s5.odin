@@ -1,19 +1,5 @@
-# Compiled binaries
-s5proxy
-s5proxy_linux
-s5proxy_linux_dev
-s5proxy_linux_tiny
-s5proxy_linux_secure
-s5proxy.exe
-s5proxy_dev.exe
-s5proxy_tiny.exe
-backconnect_server_linux
-backconnect_server_linux_dev
-backconnect_server_linux_secure
-backconnect_server.exe
-*.exe
-*.bin
-*.out
+# Build output
+build/
 
 # Odin build artifacts
 *.o
@@ -43,8 +29,6 @@ desktop.ini
 # Temporary files
 *.tmp
 *.temp
-s5_proxy
-cmd/server/backconnect_server
-*.exe
+
 # Claude Code config
 .claude/
