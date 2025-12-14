@@ -332,39 +332,48 @@ free_port :: proc(port: u16) {
 
 // Start a dedicated SOCKS5 listener for a specific client
 start_client_socks_listener :: proc(client: ^BC_Client) -> bool {
-    // Allocate port
-    port, ok := allocate_port()
-    if !ok {
-        log.error("Failed to allocate port for client - port range exhausted")
-        return false
-    }
+    // Try to find a port that we can actually bind to
+    // (some ports may be in TIME_WAIT from recently closed connections)
+    MAX_ATTEMPTS :: 100
 
-    client.socks_port = port
-
-    // Create listener
-    addr_str := fmt.tprintf("0.0.0.0:%d", port)
-    endpoint, parse_ok := net.parse_endpoint(addr_str)
-    if !parse_ok {
-        free_port(port)
-        return false
-    }
-
-    listen_socket, listen_err := net.listen_tcp(endpoint)
-    if listen_err != nil {
-        if g_config.verbose {
-            log.errorf("Failed to bind client SOCKS5 listener on port %d: %v", port, listen_err)
+    for attempt in 0..<MAX_ATTEMPTS {
+        // Allocate port
+        port, ok := allocate_port()
+        if !ok {
+            log.error("Failed to allocate port for client - port range exhausted")
+            return false
         }
-        free_port(port)
-        return false
+
+        // Create listener
+        addr_str := fmt.tprintf("0.0.0.0:%d", port)
+        endpoint, parse_ok := net.parse_endpoint(addr_str)
+        if !parse_ok {
+            free_port(port)
+            continue
+        }
+
+        listen_socket, listen_err := net.listen_tcp(endpoint)
+        if listen_err != nil {
+            if g_config.verbose {
+                log.warnf("Port %d unavailable (likely TIME_WAIT), trying next...", port)
+            }
+            // Don't free the port - mark it as unavailable for now
+            // It will be cleaned up eventually or on restart
+            continue
+        }
+
+        // Success!
+        client.socks_port = port
+        client.socks_listener = listen_socket
+        client.socks_running = true
+
+        // Start listener thread
+        thread.create_and_start_with_poly_data(client, run_client_socks_listener_thread)
+        return true
     }
 
-    client.socks_listener = listen_socket
-    client.socks_running = true
-
-    // Start listener thread
-    thread.create_and_start_with_poly_data(client, run_client_socks_listener_thread)
-
-    return true
+    log.error("Failed to find available port after multiple attempts")
+    return false
 }
 
 // Stop the dedicated SOCKS5 listener for a client
